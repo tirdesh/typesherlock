@@ -1,4 +1,10 @@
-import { ENUM_MAX_VALUES, typesEqual, type InferredType, type StringFormat } from "./infer.js";
+import {
+  ENUM_MAX_VALUES,
+  compatibleWithWildcard,
+  typesEqual,
+  type InferredType,
+  type StringFormat,
+} from "./infer.js";
 
 const VALID_IDENTIFIER = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
 
@@ -17,6 +23,14 @@ function enumValues(type: InferredType): string[] | undefined {
   return type.values.length >= 2 && type.values.length <= ENUM_MAX_VALUES
     ? type.values
     : undefined;
+}
+
+function fieldComment(type: InferredType): string {
+  if (type.kind === "string" && type.format) return ` // ${FORMAT_LABELS[type.format]}`;
+  if (type.kind === "number" && type.lossy) {
+    return " // WARNING: integer beyond Number.MAX_SAFE_INTEGER — JSON parsing may lose precision";
+  }
+  return "";
 }
 
 function keyLiteral(key: string): string {
@@ -39,7 +53,24 @@ interface GenContext {
    * differently-shaped objects that pascal-case to the same name can be detected
    * instead of silently merged into one (dropping whichever fields don't match). */
   shapesByName: Map<string, InferredType>;
+  /** Object shapes currently being generated, outermost first — used to detect
+   * recursive structures (see compatibleWithWildcard's doc comment). */
+  ancestors: { name: string; shape: InferredType & { kind: "object" } }[];
   rootName: string;
+}
+
+/** If `shape` matches an ancestor currently being generated, return that
+ * ancestor's name instead of minting a new type for it. */
+function findRecursiveAncestor(
+  shape: InferredType & { kind: "object" },
+  ctx: GenContext
+): string | undefined {
+  for (let i = ctx.ancestors.length - 1; i >= 0; i--) {
+    if (compatibleWithWildcard(shape, ctx.ancestors[i].shape)) {
+      return ctx.ancestors[i].name;
+    }
+  }
+  return undefined;
 }
 
 /**
@@ -82,6 +113,8 @@ function tsTypeOf(type: InferredType, path: string[], ctx: GenContext): string {
     case "union":
       return type.options.map((o) => tsTypeOf(o, path, ctx)).join(" | ");
     case "object": {
+      const recursive = findRecursiveAncestor(type, ctx);
+      if (recursive) return recursive;
       const baseName = pascalCase(path.join(" "));
       return registerInterface(baseName, type, ctx);
     }
@@ -97,16 +130,15 @@ function registerInterface(
   if (!isNew) return name;
   // Reserve the name before recursing so self-referential shapes don't loop.
   ctx.interfaces.set(name, "");
+  ctx.ancestors.push({ name, shape });
   const fields = shape.fields;
   const lines = Object.entries(fields).map(([key, field]) => {
     const tsType = tsTypeOf(field.type, [name, key], ctx);
     const optionalMark = field.optional ? "?" : "";
-    const comment =
-      field.type.kind === "string" && field.type.format
-        ? ` // ${FORMAT_LABELS[field.type.format]}`
-        : "";
+    const comment = fieldComment(field.type);
     return `  ${keyLiteral(key)}${optionalMark}: ${tsType};${comment}`;
   });
+  ctx.ancestors.pop();
   const body = lines.length > 0 ? `\n${lines.join("\n")}\n` : "";
   ctx.interfaces.set(name, `export interface ${name} {${body}}`);
   return name;
@@ -128,7 +160,7 @@ export function generateTypeScript(
   options: GenerateOptions = {}
 ): GenerateResult {
   const rootName = options.rootName ?? "Root";
-  const ctx: GenContext = { interfaces: new Map(), shapesByName: new Map(), rootName };
+  const ctx: GenContext = { interfaces: new Map(), shapesByName: new Map(), ancestors: [], rootName };
 
   if (type.kind === "object") {
     registerInterface(rootName, type, ctx);
@@ -170,6 +202,13 @@ function zodExprOf(type: InferredType, path: string[], ctx: GenContext): string 
         .map((o) => zodExprOf(o, path, ctx))
         .join(", ")}])`;
     case "object": {
+      const recursive = findRecursiveAncestor(type, ctx);
+      if (recursive) {
+        // A recursive schema can't reference itself directly in its own
+        // initializer (the const isn't defined yet at that point) — z.lazy()
+        // defers evaluation until the schema is actually used.
+        return `z.lazy(() => ${recursive}Schema)`;
+      }
       const baseName = pascalCase(path.join(" "));
       const name = registerZodSchema(baseName, type, ctx);
       return `${name}Schema`;
@@ -186,12 +225,14 @@ function registerZodSchema(
   const schemaName = `${name}Schema`;
   if (!isNew) return name;
   ctx.interfaces.set(schemaName, "");
+  ctx.ancestors.push({ name, shape });
   const fields = shape.fields;
   const lines = Object.entries(fields).map(([key, field]) => {
     let expr = zodExprOf(field.type, [name, key], ctx);
     if (field.optional) expr += ".optional()";
     return `  ${keyLiteral(key)}: ${expr},`;
   });
+  ctx.ancestors.pop();
   ctx.interfaces.set(
     schemaName,
     `export const ${schemaName} = z.object({\n${lines.join("\n")}\n});`
@@ -205,7 +246,7 @@ export function generateZodSchema(
   options: GenerateOptions = {}
 ): GenerateResult {
   const rootName = options.rootName ?? "Root";
-  const ctx: GenContext = { interfaces: new Map(), shapesByName: new Map(), rootName };
+  const ctx: GenContext = { interfaces: new Map(), shapesByName: new Map(), ancestors: [], rootName };
 
   if (type.kind === "object") {
     registerZodSchema(rootName, type, ctx);

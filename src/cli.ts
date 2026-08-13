@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-import { writeFileSync } from "node:fs";
-import { inferFromSamples } from "./infer.js";
+import { readFileSync, writeFileSync } from "node:fs";
+import { inferFromSamples, mergeTypes, type InferredType } from "./infer.js";
 import { generateTypeScript, generateZodSchema } from "./generate.js";
 
 class CliArgError extends Error {}
@@ -9,12 +9,47 @@ interface OutputOptions {
   rootName: string;
   outFile: string | null;
   zod: boolean;
+  cacheFile: string | null;
+}
+
+/**
+ * Merge this run's samples with whatever was previously cached at
+ * `opts.cacheFile` (if anything), and write the combined result back — so
+ * accuracy (optional fields, enums, unions) accumulates for free across
+ * ordinary separate invocations against the same endpoint, without the user
+ * having to manually assemble a multi-sample array every time. InferredType
+ * is a plain JSON-serializable tree, so the cache is just that, verbatim.
+ */
+function resolveInferredType(samples: unknown[], cacheFile: string | null): InferredType {
+  const newType = inferFromSamples(samples);
+  if (!cacheFile) return newType;
+
+  let cached: InferredType | null = null;
+  try {
+    cached = JSON.parse(readFileSync(cacheFile, "utf8")) as InferredType;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+      process.stderr.write(
+        `typesherlock: ignoring unreadable cache at ${cacheFile} (${(err as Error).message})\n`
+      );
+    }
+  }
+
+  const merged = cached ? mergeTypes(cached, newType) : newType;
+  try {
+    writeFileSync(cacheFile, JSON.stringify(merged), "utf8");
+  } catch (err) {
+    process.stderr.write(
+      `typesherlock: couldn't update cache at ${cacheFile} (${(err as Error).message})\n`
+    );
+  }
+  return merged;
 }
 
 /** Render samples into TS (+ optional Zod) and write to stdout or a file. Shared
  * by both the stdin path and the `fetch` subcommand. */
 function emitTypes(samples: unknown[], opts: OutputOptions): number {
-  const inferred = inferFromSamples(samples);
+  const inferred = resolveInferredType(samples, opts.cacheFile);
   const { typescript: tsOut } = generateTypeScript(inferred, { rootName: opts.rootName });
   const parts = [tsOut.trimEnd()];
 
@@ -50,7 +85,13 @@ interface StdinOptions extends OutputOptions {
 }
 
 function parseStdinArgs(argv: string[]): StdinOptions {
-  const opts: StdinOptions = { rootName: "Root", outFile: null, zod: false, help: false };
+  const opts: StdinOptions = {
+    rootName: "Root",
+    outFile: null,
+    zod: false,
+    cacheFile: null,
+    help: false,
+  };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "-h" || arg === "--help") {
@@ -63,6 +104,9 @@ function parseStdinArgs(argv: string[]): StdinOptions {
       opts.outFile = argv[++i];
     } else if (arg === "--zod") {
       opts.zod = true;
+    } else if (arg === "--cache") {
+      if (i + 1 >= argv.length) throw new CliArgError(`${arg} requires a value`);
+      opts.cacheFile = argv[++i];
     } else {
       throw new CliArgError(`unrecognized option '${arg}' (see --help)`);
     }
@@ -81,6 +125,8 @@ Options:
   --name <Name>   Name for the root type (default: Root)
   --zod           Also emit a Zod schema alongside the TS interface
   -o, --out <file> Write output to a file instead of stdout
+  --cache <file>  Merge with (and update) a saved type from previous runs,
+                   so accuracy improves across separate invocations over time
   -h, --help      Show this help
 
 Multiple samples:
@@ -172,6 +218,8 @@ Options:
   --name <Name>     Name for the root type (default: Root)
   --zod             Also emit a Zod schema alongside the TS interface
   -o, --out <file>  Write output to a file instead of stdout
+  --cache <file>    Merge with (and update) a saved type from previous runs,
+                     so accuracy improves across separate invocations over time
   --header <H>      Extra request header, e.g. --header "Authorization: Bearer xyz"
                      (repeatable)
   -h, --help        Show this help
@@ -185,6 +233,7 @@ function parseFetchArgs(argv: string[]): FetchOptions {
     rootName: "Root",
     outFile: null,
     zod: false,
+    cacheFile: null,
     help: false,
     urls: [],
     headers: [],
@@ -202,6 +251,9 @@ function parseFetchArgs(argv: string[]): FetchOptions {
       opts.outFile = argv[++i];
     } else if (arg === "--zod") {
       opts.zod = true;
+    } else if (arg === "--cache") {
+      if (i + 1 >= argv.length) throw new CliArgError(`${arg} requires a value`);
+      opts.cacheFile = argv[++i];
     } else if (arg === "--header") {
       if (i + 1 >= argv.length) throw new CliArgError(`${arg} requires a value`);
       opts.headers.push(argv[++i]);

@@ -128,6 +128,26 @@ enum detection from real evidence across the calls. Run `typesherlock fetch
 --help` for the full option list. This subcommand is the only part of
 typesherlock that makes network calls; the default stdin mode never does.
 
+#### Accumulating evidence across separate runs with `--cache`
+
+Multi-sample evidence doesn't have to come from one command. `--cache <file>`
+saves the inferred type to a local file and merges it with each new run's
+sample — so if you happen to call `typesherlock` (or `typesherlock fetch`)
+against the same endpoint a few times over the course of normal use, accuracy
+(optional fields, unions, enums) improves for free, without ever manually
+assembling a sample array:
+
+```bash
+typesherlock fetch https://api.example.com/users/1 --name User --cache .typesherlock-cache.json
+# ...later, a separate run against a different ID...
+typesherlock fetch https://api.example.com/users/2 --name User --cache .typesherlock-cache.json
+# the second run's output reflects everything seen in both calls combined
+```
+
+Works with the default stdin mode too. A missing or unreadable cache file is
+treated as "nothing cached yet" (with a warning if it existed but was
+corrupt) rather than an error — the cache is a bonus, not a requirement.
+
 ## What it does (and doesn't) do
 
 Everything is **deterministic structural + regex/statistical inference** —
@@ -145,6 +165,15 @@ Given one or more JSON samples it deduces:
   values seen across genuinely *separate* samples (e.g. `status: "active"`
   in one call, `"pending"` in another) is rendered as a string literal union
   in TS and `z.enum([...])` in Zod
+- **recursive structures** (e.g. a comment with nested `replies` of the same
+  shape): detected even when your sample runs out of data a level or two
+  deep, and rendered as a genuine self-referential type (`replies: Comment[]`
+  in TS, `z.lazy(() => CommentSchema)` in Zod — recursive Zod schemas need
+  `z.lazy()` since a `const` can't reference itself during its own init)
+- **integers beyond `Number.MAX_SAFE_INTEGER`** are flagged with a warning
+  comment rather than silently mistyped — `JSON.parse` itself already loses
+  precision on these before any tool sees them, so the original exact value
+  can't be recovered, but at least the risk is visible instead of silent
 
 Enum detection is deliberately scoped to cross-sample evidence only — values
 repeated *within one array in a single response* (e.g. `tags: ["admin",

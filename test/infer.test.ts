@@ -187,6 +187,24 @@ describe("generateTypeScript", () => {
     const { typescript } = generateTypeScript(type, { rootName: "Resp" });
     expect(typescript).toContain("createdAt: string; // ISO 8601 date-time");
   });
+
+  it("flags integers beyond Number.MAX_SAFE_INTEGER with a warning comment", () => {
+    const type = inferFromSamples([{ id: 123456789012345678901234, safe: 42 }]);
+    const { typescript } = generateTypeScript(type, { rootName: "Resp" });
+    expect(typescript).toContain("id: number; // WARNING:");
+    expect(typescript).not.toContain("safe: number; //");
+  });
+
+  it("renders a recursive structure as a self-referential type, not unknown[]", () => {
+    // The one sample runs out of data at depth 2 (replies: []), but the shape
+    // at depth 1 already matches the root — should reuse Comment, not invent
+    // a dead-end CommentRepliesItem with replies: unknown[].
+    const type = inferFromSamples([{ id: 1, replies: [{ id: 2, replies: [] }] }]);
+    const { typescript } = generateTypeScript(type, { rootName: "Comment" });
+    expect(typescript).toContain("replies: Comment[];");
+    expect(typescript).not.toContain("unknown");
+    expect(typescript).not.toContain("CommentRepliesItem");
+  });
 });
 
 describe("generateZodSchema", () => {
@@ -218,5 +236,26 @@ describe("generateZodSchema", () => {
     const { typescript } = generateZodSchema(type, { rootName: "Resp" });
     expect(typescript).toContain("createdAt: z.string().datetime(),");
     expect(typescript).toContain("id: z.string().uuid(),");
+  });
+
+  it("renders a recursive structure using z.lazy(), and it actually parses at runtime", async () => {
+    const type = inferFromSamples([{ id: 1, replies: [{ id: 2, replies: [] }] }]);
+    const { typescript } = generateZodSchema(type, { rootName: "Comment" });
+    expect(typescript).toContain("replies: z.array(z.lazy(() => CommentSchema)),");
+
+    // z.object({ ...replies: z.array(CommentSchema)... }) would throw a
+    // ReferenceError at module init (self-reference before the const is
+    // assigned) — z.lazy() defers evaluation, so this must actually work,
+    // not just look right as a string.
+    const { z } = await import("zod");
+    // `new Function` bodies aren't modules, so strip the `export` keywords
+    // (the import line was already stripped, we only need the const decls).
+    const body = typescript.replace(/^import .*;\n\n/, "").replace(/export /g, "");
+    const schema = new Function("z", `${body}\nreturn CommentSchema;`)(z);
+    const result = schema.safeParse({
+      id: 1,
+      replies: [{ id: 2, replies: [{ id: 3, replies: [] }] }],
+    });
+    expect(result.success).toBe(true);
   });
 });

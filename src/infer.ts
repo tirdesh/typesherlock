@@ -18,7 +18,17 @@ export type InferredType =
        */
       values?: string[];
     }
-  | { kind: "number" }
+  | {
+      kind: "number";
+      /**
+       * Set when this value is an integer beyond Number.MAX_SAFE_INTEGER.
+       * JSON.parse itself already rounds such values to the nearest
+       * representable double before we ever see them, so the original exact
+       * digits are unrecoverable here — this only flags that the risk exists,
+       * it doesn't (can't) fix the precision loss.
+       */
+      lossy?: boolean;
+    }
   | { kind: "boolean" }
   | { kind: "null" }
   | { kind: "unknown" } // seen zero samples for this field
@@ -90,7 +100,9 @@ function typeOfValue(value: unknown): InferredType {
       return format ? { kind: "string", format } : { kind: "string", values: [value] };
     }
     case "number":
-      return { kind: "number" };
+      return Number.isInteger(value) && !Number.isSafeInteger(value)
+        ? { kind: "number", lossy: true }
+        : { kind: "number" };
     case "boolean":
       return { kind: "boolean" };
     case "object":
@@ -133,6 +145,41 @@ export function typesEqual(a: InferredType, b: InferredType): boolean {
   return true;
 }
 
+/**
+ * Like typesEqual, but treats "unknown" (seen zero samples for this spot) as
+ * compatible with anything. Used to detect recursive shapes: a nested object
+ * three levels deep whose own nested field ran out of sample data (e.g. an
+ * empty `replies: []` at the leaf of your one sample) should still be
+ * recognized as "the same shape as its ancestor" rather than falling back to
+ * a dead-end `unknown[]` — a human writing this by hand would just write
+ * `replies: Comment[]` recursively, using their own judgment to fill the gap
+ * sample data alone can't.
+ */
+export function compatibleWithWildcard(a: InferredType, b: InferredType): boolean {
+  if (a.kind === "unknown" || b.kind === "unknown") return true;
+  if (a.kind !== b.kind) return false;
+  if (a.kind === "array" && b.kind === "array") {
+    return compatibleWithWildcard(a.items, b.items);
+  }
+  if (a.kind === "object" && b.kind === "object") {
+    const aKeys = Object.keys(a.fields).sort();
+    const bKeys = Object.keys(b.fields).sort();
+    if (aKeys.length !== bKeys.length || aKeys.some((k, i) => k !== bKeys[i])) {
+      return false;
+    }
+    return aKeys.every(
+      (k) =>
+        a.fields[k].optional === b.fields[k].optional &&
+        compatibleWithWildcard(a.fields[k].type, b.fields[k].type)
+    );
+  }
+  if (a.kind === "union" && b.kind === "union") {
+    if (a.options.length !== b.options.length) return false;
+    return a.options.every((opt) => b.options.some((o) => compatibleWithWildcard(opt, o)));
+  }
+  return true;
+}
+
 function mergeStringTypes(
   a: Extract<InferredType, { kind: "string" }>,
   b: Extract<InferredType, { kind: "string" }>
@@ -149,6 +196,9 @@ export function mergeTypes(a: InferredType, b: InferredType): InferredType {
   if (a.kind === "unknown") return b;
   if (b.kind === "unknown") return a;
   if (a.kind === "string" && b.kind === "string") return mergeStringTypes(a, b);
+  if (a.kind === "number" && b.kind === "number") {
+    return a.lossy || b.lossy ? { kind: "number", lossy: true } : { kind: "number" };
+  }
 
   // No shortcut for "already structurally equal" here: typesEqual ignores
   // string metadata (format/values) by design (see its own doc comment), so
