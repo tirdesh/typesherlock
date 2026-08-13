@@ -89,19 +89,35 @@ are treated as sample sets, since that's the unambiguous case.)
 
 ## What it does (and doesn't) do
 
-Everything in v0.1 is **pure structural inference** — no AI, no network
-calls beyond reading stdin, no API key required. Given one or more JSON
-samples it deduces:
+Everything is **deterministic structural + regex/statistical inference** —
+no AI, no network calls beyond reading stdin, no API key required, ever.
+Given one or more JSON samples it deduces:
 
 - nested object shapes, hoisted into their own named interfaces
 - array element types
 - fields that are optional (present in some samples, not others)
 - fields whose type varies across samples (rendered as a union)
+- **string formats**, via regex: ISO 8601 date-times, UUIDs, emails, and URLs
+  are tagged with a doc comment on the TS field and the matching Zod
+  validator (`z.string().datetime()` / `.uuid()` / `.email()` / `.url()`)
+- **closed-set string fields**, via statistics: a field with 2+ distinct
+  values seen across genuinely *separate* samples (e.g. `status: "active"`
+  in one call, `"pending"` in another) is rendered as a string literal union
+  in TS and `z.enum([...])` in Zod
 
-It does **not** yet do semantic inference — e.g. recognizing that a string
-field is always an ISO date, a UUID, or a closed set of enum values from
-limited samples. That's deliberately out of scope for the deterministic core
-and is the planned `--infer` layer (see Roadmap).
+Enum detection is deliberately scoped to cross-sample evidence only — values
+repeated *within one array in a single response* (e.g. `tags: ["admin",
+"beta"]`) are not treated as enum evidence, since that's the array's actual
+data, not a hint about the field's whole value space. Verified against real
+API responses: PokeAPI's repeated ability names correctly stay free text,
+while the Rick and Morty API's `status` field correctly becomes
+`z.enum(["Alive", "unknown", "Dead"])` once given three separate samples.
+
+None of this needs an AI model — date/UUID/email/URL formats are fixed,
+well-known patterns, and "does this field take only a few distinct values"
+is a counting problem, not a judgment call. An AI layer remains on the
+roadmap only for the genuinely ambiguous cases regex/stats can't resolve
+(e.g. is `"id": "12345"` meant to be opaque, or a stringified number?).
 
 ## Architecture
 
@@ -129,11 +145,14 @@ tool call, without duplicating logic.
 
 ## Roadmap
 
-- [ ] **`--infer` semantic layer.** Optional AI-assisted pass on top of the
-      structural result: detect likely enums from repeated string values,
-      recognize date/UUID/email-shaped strings, and produce more confident
-      unions from limited samples. Off by default — the deterministic core
-      never requires an API key.
+- [x] **Regex/statistical semantic layer.** Date/UUID/email/URL format
+      detection and closed-set enum detection from cross-sample evidence —
+      done, no AI involved (see above).
+- [ ] **AI layer, for genuinely ambiguous cases only.** Not a default engine
+      for semantic detection (regex/stats already cover the standard cases) —
+      scoped narrowly to judgment calls those can't make, e.g. disambiguating
+      intent behind a field's name/shape. Off by default; the deterministic
+      core never requires an API key.
 - [ ] **MCP tool.** Expose the same core engine as an MCP tool so coding
       agents (Claude Code, etc.) can call it directly instead of pasting raw
       JSON into their own context to reason out types inline — cheaper,
