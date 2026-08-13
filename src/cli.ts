@@ -10,6 +10,8 @@ interface CliOptions {
   help: boolean;
 }
 
+class CliArgError extends Error {}
+
 function parseArgs(argv: string[]): CliOptions {
   const opts: CliOptions = {
     rootName: "Root",
@@ -19,10 +21,19 @@ function parseArgs(argv: string[]): CliOptions {
   };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
-    if (arg === "-h" || arg === "--help") opts.help = true;
-    else if (arg === "--name") opts.rootName = argv[++i];
-    else if (arg === "-o" || arg === "--out") opts.outFile = argv[++i];
-    else if (arg === "--zod") opts.zod = true;
+    if (arg === "-h" || arg === "--help") {
+      opts.help = true;
+    } else if (arg === "--name") {
+      if (i + 1 >= argv.length) throw new CliArgError(`${arg} requires a value`);
+      opts.rootName = argv[++i];
+    } else if (arg === "-o" || arg === "--out") {
+      if (i + 1 >= argv.length) throw new CliArgError(`${arg} requires a value`);
+      opts.outFile = argv[++i];
+    } else if (arg === "--zod") {
+      opts.zod = true;
+    } else {
+      throw new CliArgError(`unrecognized option '${arg}' (see --help)`);
+    }
   }
   return opts;
 }
@@ -68,7 +79,17 @@ function toSamples(parsed: unknown): unknown[] {
 }
 
 export async function run(argv: string[]): Promise<void> {
-  const opts = parseArgs(argv);
+  let opts: CliOptions;
+  try {
+    opts = parseArgs(argv);
+  } catch (err) {
+    if (err instanceof CliArgError) {
+      process.stderr.write(`typesherlock: ${err.message}\n`);
+      process.exitCode = 1;
+      return;
+    }
+    throw err;
+  }
   if (opts.help) {
     process.stdout.write(HELP);
     return;
@@ -103,7 +124,15 @@ export async function run(argv: string[]): Promise<void> {
   const output = parts.join("\n\n") + "\n";
 
   if (opts.outFile) {
-    writeFileSync(opts.outFile, output, "utf8");
+    try {
+      writeFileSync(opts.outFile, output, "utf8");
+    } catch (err) {
+      process.stderr.write(
+        `typesherlock: couldn't write to ${opts.outFile} (${(err as Error).message})\n`
+      );
+      process.exitCode = 1;
+      return;
+    }
     process.stderr.write(`typesherlock: wrote ${opts.outFile}\n`);
   } else {
     process.stdout.write(output);

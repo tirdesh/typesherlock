@@ -33,4 +33,12 @@ describe("CLI end-to-end", () => {
   it("errors cleanly on invalid JSON", () => {
     expect(() => runCli("not json")).toThrow();
   });
+
+  it("errors cleanly on an unrecognized flag instead of silently ignoring it", () => {
+    expect(() => runCli(JSON.stringify({ id: 1 }), ["--bogus"])).toThrow();
+  });
+
+  it("errors cleanly when a flag that needs a value is given none", () => {
+    expect(() => runCli(JSON.stringify({ id: 1 }), ["--name"])).toThrow();
+  });
 });
