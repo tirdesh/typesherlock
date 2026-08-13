@@ -1,9 +1,23 @@
 // Structural type inference from JSON values. No AI involved here — this is
 // the deterministic layer: given one or more sample JSON payloads, deduce a
-// shape that describes all of them.
+// shape that describes all of them. String-shape detection (dates, UUIDs,
+// emails, URLs, closed-set enums) is regex/statistics only — see the comment
+// above ENUM_MAX_VALUES for why enum evidence is scoped the way it is.
+
+export type StringFormat = "date-time" | "uuid" | "email" | "url";
 
 export type InferredType =
-  | { kind: "string" }
+  | {
+      kind: "string";
+      /** Set when every observed value matches one regex-detectable format. */
+      format?: StringFormat;
+      /**
+       * Distinct literal values seen so far, while the field still looks like
+       * a plausible closed-set enum. Absent once the field has a format, or
+       * once distinct values exceed VALUES_TRACK_CAP (clearly free text).
+       */
+      values?: string[];
+    }
   | { kind: "number" }
   | { kind: "boolean" }
   | { kind: "null" }
@@ -18,14 +32,63 @@ export interface FieldType {
   optional: boolean;
 }
 
+/** Above this many distinct values, a field is clearly free text, not an enum. */
+const VALUES_TRACK_CAP = 20;
+
+/** At or below this many distinct values (and at least 2), render as a literal union. */
+export const ENUM_MAX_VALUES = 5;
+
+const FORMAT_PATTERNS: [StringFormat, RegExp][] = [
+  ["date-time", /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:?\d{2})?$/],
+  ["uuid", /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i],
+  ["email", /^[^\s@]+@[^\s@]+\.[^\s@]+$/],
+  ["url", /^https?:\/\/\S+$/],
+];
+
+function detectFormat(value: string): StringFormat | undefined {
+  for (const [format, pattern] of FORMAT_PATTERNS) {
+    if (pattern.test(value)) return format;
+  }
+  return undefined;
+}
+
+/**
+ * Strip enum candidacy (but keep detected formats) from a type. Applied to
+ * array item types: repeated string values *within one array in a single
+ * sample* (e.g. `tags: ["admin", "beta"]`) are not evidence of a closed set
+ * the way repeated values *across separately piped samples* are — an array's
+ * own contents are the data, not a hint about the field's whole value space.
+ */
+function stripEnumCandidacy(type: InferredType): InferredType {
+  switch (type.kind) {
+    case "string":
+      return type.values ? { kind: "string", format: type.format } : type;
+    case "array":
+      return { kind: "array", items: stripEnumCandidacy(type.items) };
+    case "object": {
+      const fields: Record<string, FieldType> = {};
+      for (const [key, field] of Object.entries(type.fields)) {
+        fields[key] = { type: stripEnumCandidacy(field.type), optional: field.optional };
+      }
+      return { kind: "object", fields };
+    }
+    case "union":
+      return { kind: "union", options: type.options.map(stripEnumCandidacy) };
+    default:
+      return type;
+  }
+}
+
 function typeOfValue(value: unknown): InferredType {
   if (value === null) return { kind: "null" };
   if (Array.isArray(value)) {
-    return { kind: "array", items: mergeAll(value.map(typeOfValue)) };
+    return { kind: "array", items: stripEnumCandidacy(mergeAll(value.map(typeOfValue))) };
   }
   switch (typeof value) {
-    case "string":
-      return { kind: "string" };
+    case "string": {
+      const format = detectFormat(value);
+      return format ? { kind: "string", format } : { kind: "string", values: [value] };
+    }
     case "number":
       return { kind: "number" };
     case "boolean":
@@ -70,12 +133,27 @@ export function typesEqual(a: InferredType, b: InferredType): boolean {
   return true;
 }
 
+function mergeStringTypes(
+  a: Extract<InferredType, { kind: "string" }>,
+  b: Extract<InferredType, { kind: "string" }>
+): InferredType {
+  const format = a.format && a.format === b.format ? a.format : undefined;
+  if (format) return { kind: "string", format };
+  if (!a.values || !b.values) return { kind: "string" };
+  const values = Array.from(new Set([...a.values, ...b.values]));
+  return values.length > VALUES_TRACK_CAP ? { kind: "string" } : { kind: "string", values };
+}
+
 /** Merge two inferred types into one that describes both (union if incompatible). */
 export function mergeTypes(a: InferredType, b: InferredType): InferredType {
   if (a.kind === "unknown") return b;
   if (b.kind === "unknown") return a;
-  if (typesEqual(a, b)) return a;
+  if (a.kind === "string" && b.kind === "string") return mergeStringTypes(a, b);
 
+  // No shortcut for "already structurally equal" here: typesEqual ignores
+  // string metadata (format/values) by design (see its own doc comment), so
+  // short-circuiting on it would skip merging e.g. two equally-shaped objects
+  // whose string fields have different enum-candidate values.
   if (a.kind === "object" && b.kind === "object") {
     const keys = new Set([...Object.keys(a.fields), ...Object.keys(b.fields)]);
     const fields: Record<string, FieldType> = {};

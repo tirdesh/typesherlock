@@ -1,6 +1,23 @@
-import { typesEqual, type InferredType } from "./infer.js";
+import { ENUM_MAX_VALUES, typesEqual, type InferredType, type StringFormat } from "./infer.js";
 
 const VALID_IDENTIFIER = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
+
+const FORMAT_LABELS: Record<StringFormat, string> = {
+  "date-time": "ISO 8601 date-time",
+  uuid: "UUID",
+  email: "email address",
+  url: "URL",
+};
+
+/** A string type qualifies as a closed-set enum once it has 2+ distinct
+ * observed values (1 value is just "this is what one sample happened to be",
+ * not evidence of a closed set) and isn't so many that it's clearly free text. */
+function enumValues(type: InferredType): string[] | undefined {
+  if (type.kind !== "string" || !type.values) return undefined;
+  return type.values.length >= 2 && type.values.length <= ENUM_MAX_VALUES
+    ? type.values
+    : undefined;
+}
 
 function keyLiteral(key: string): string {
   return VALID_IDENTIFIER.test(key) ? key : JSON.stringify(key);
@@ -48,8 +65,10 @@ function resolveName(
 
 function tsTypeOf(type: InferredType, path: string[], ctx: GenContext): string {
   switch (type.kind) {
-    case "string":
-      return "string";
+    case "string": {
+      const values = enumValues(type);
+      return values ? values.map((v) => JSON.stringify(v)).join(" | ") : "string";
+    }
     case "number":
       return "number";
     case "boolean":
@@ -82,7 +101,11 @@ function registerInterface(
   const lines = Object.entries(fields).map(([key, field]) => {
     const tsType = tsTypeOf(field.type, [name, key], ctx);
     const optionalMark = field.optional ? "?" : "";
-    return `  ${keyLiteral(key)}${optionalMark}: ${tsType};`;
+    const comment =
+      field.type.kind === "string" && field.type.format
+        ? ` // ${FORMAT_LABELS[field.type.format]}`
+        : "";
+    return `  ${keyLiteral(key)}${optionalMark}: ${tsType};${comment}`;
   });
   const body = lines.length > 0 ? `\n${lines.join("\n")}\n` : "";
   ctx.interfaces.set(name, `export interface ${name} {${body}}`);
@@ -118,10 +141,20 @@ export function generateTypeScript(
   return { typescript, rootName };
 }
 
+const ZOD_FORMAT_METHODS: Record<StringFormat, string> = {
+  "date-time": "z.string().datetime()",
+  uuid: "z.string().uuid()",
+  email: "z.string().email()",
+  url: "z.string().url()",
+};
+
 function zodExprOf(type: InferredType, path: string[], ctx: GenContext): string {
   switch (type.kind) {
-    case "string":
-      return "z.string()";
+    case "string": {
+      const values = enumValues(type);
+      if (values) return `z.enum([${values.map((v) => JSON.stringify(v)).join(", ")}])`;
+      return type.format ? ZOD_FORMAT_METHODS[type.format] : "z.string()";
+    }
     case "number":
       return "z.number()";
     case "boolean":
