@@ -30,7 +30,7 @@
   "author": "",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/OWNER/typesherlock.git"
+    "url": "git+https://github.com/tirdesh/typesherlock.git"
   },
   "engines": {
     "node": ">=18"
