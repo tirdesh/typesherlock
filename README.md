@@ -87,6 +87,35 @@ for a known error case, wrap both in a `[ ... ]` array, and pipe that in.
 single array-typed sample, not as multiple samples — only arrays of objects
 are treated as sample sets, since that's the unambiguous case.)
 
+#### Gathering multiple real samples in one command
+
+Building that `[sample1, sample2]` array by hand from separate `curl` calls
+is tedious. `multi-fetch.sh`, bundled with this package, does the fetching
+for you and prints the combined array on stdout — it's a thin wrapper around
+the real system `curl` (one call per URL), not a new HTTP client:
+
+```bash
+npx typesherlock-multi-fetch \
+  https://api.example.com/users/1 \
+  https://api.example.com/users/2 \
+  https://api.example.com/users/999 \
+  | typesherlock --name User --zod
+```
+
+This is the same result as calling `curl` three times and hand-assembling
+the array — just one command instead of several. Extra `curl` flags (e.g.
+an auth header) can be passed via the `CURL_ARGS` environment variable:
+
+```bash
+CURL_ARGS='-H "Authorization: Bearer $TOKEN"' \
+  npx typesherlock-multi-fetch https://api.example.com/users/1 https://api.example.com/users/999
+```
+
+Note this is a convenience script, not part of the core tool: `typesherlock`
+itself still makes zero network calls and only ever reads stdin — the
+network access here is isolated to this one opt-in script, which just does
+what you'd otherwise type by hand.
+
 ## What it does (and doesn't) do
 
 Everything is **deterministic structural + regex/statistical inference** —
