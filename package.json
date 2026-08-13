@@ -1,0 +1,47 @@
+{
+  "name": "typesherlock",
+  "version": "0.1.0",
+  "description": "Pipe a JSON API response in, get a TypeScript interface + Zod schema out. Deduces types instead of guessing them.",
+  "type": "module",
+  "bin": {
+    "typesherlock": "./dist/cli.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx src/cli.ts",
+    "test": "vitest run",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "typescript",
+    "json",
+    "type-inference",
+    "zod",
+    "cli",
+    "codegen",
+    "api"
+  ],
+  "license": "MIT",
+  "author": "",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/OWNER/typesherlock.git"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.4",
+    "tsx": "^4.16.2",
+    "vitest": "^2.0.5",
+    "@types/node": "^20.14.15"
+  }
+}

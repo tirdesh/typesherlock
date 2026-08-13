@@ -1,0 +1,157 @@
+# typesherlock
+
+Pipe a JSON API response in, get a TypeScript interface (and optionally a Zod
+schema) out.
+
+```bash
+curl -s https://api.github.com/repos/vercel/next.js | typesherlock --name Repo
+```
+
+```ts
+export interface Repo {
+  id: number;
+  node_id: string;
+  name: string;
+  full_name: string;
+  owner: RepoOwner;
+  // ... every field, correctly typed, in one command
+}
+```
+
+## Why
+
+If an API has an OpenAPI/Swagger spec, you don't need this — use a proper
+codegen tool against the spec. This tool is for the much more common
+situation where there **isn't** one: an internal service, a partner API you
+don't control, a scraped or reverse-engineered endpoint, or something still
+mid-development. In that situation people either hand-write the interface by
+eyeballing a JSON blob (slow, and easy to miss a field that's only present in
+error responses) or paste it into a chat tool and reformat the answer.
+`typesherlock` turns that into one piped command with deterministic output.
+
+## Install
+
+```bash
+npm install -g typesherlock
+```
+
+Or run it without installing:
+
+```bash
+curl -s <api> | npx typesherlock
+```
+
+## Usage
+
+```bash
+Usage:
+  curl <api> | typesherlock [options]
+  cat response.json | typesherlock [options]
+
+Options:
+  --name <Name>    Name for the root type (default: Root)
+  --zod            Also emit a Zod schema alongside the TS interface
+  -o, --out <file> Write output to a file instead of stdout
+  -h, --help       Show this help
+```
+
+### Multiple samples (success + error shapes)
+
+If you pipe in a JSON array where every element is an object, `typesherlock`
+treats each element as a separate sample response and merges them into one
+type — fields that don't appear in every sample become optional, and fields
+with different types across samples become a union:
+
+```bash
+echo '[{"ok":true,"data":{"id":1}},{"ok":false,"error":"not found"}]' \
+  | typesherlock --name ApiResponse
+```
+
+```ts
+export interface ApiResponse {
+  ok: boolean;
+  data?: ApiResponseData;
+  error?: string;
+}
+
+export interface ApiResponseData {
+  id: number;
+}
+```
+
+This is the practical way to get an accurate type for an endpoint that
+returns different shapes depending on outcome: call it once for success, once
+for a known error case, wrap both in a `[ ... ]` array, and pipe that in.
+
+(A bare JSON array of non-object values, e.g. `[1, 2, 3]`, is treated as a
+single array-typed sample, not as multiple samples — only arrays of objects
+are treated as sample sets, since that's the unambiguous case.)
+
+## What it does (and doesn't) do
+
+Everything in v0.1 is **pure structural inference** — no AI, no network
+calls beyond reading stdin, no API key required. Given one or more JSON
+samples it deduces:
+
+- nested object shapes, hoisted into their own named interfaces
+- array element types
+- fields that are optional (present in some samples, not others)
+- fields whose type varies across samples (rendered as a union)
+
+It does **not** yet do semantic inference — e.g. recognizing that a string
+field is always an ISO date, a UUID, or a closed set of enum values from
+limited samples. That's deliberately out of scope for the deterministic core
+and is the planned `--infer` layer (see Roadmap).
+
+## Architecture
+
+```
+src/infer.ts     Pure structural inference: JSON value(s) -> InferredType tree
+src/generate.ts  Renders an InferredType tree into TS interfaces / Zod schemas
+src/cli.ts       stdin/stdout wrapper: argument parsing, I/O, error handling
+src/index.ts     Library entry point (inferFromSamples, generateTypeScript, generateZodSchema)
+```
+
+The core (`infer.ts` + `generate.ts`) has no I/O and no dependencies beyond
+`zod`'s types for codegen output — it's a pure function you can also import
+directly:
+
+```ts
+import { inferFromSamples, generateTypeScript } from "typesherlock";
+
+const type = inferFromSamples([{ id: 1, name: "Ada" }]);
+const { typescript } = generateTypeScript(type, { rootName: "User" });
+```
+
+This separation matters for where the project is headed next (see Roadmap):
+the same core engine is meant to be reusable from a CLI, and from an agent
+tool call, without duplicating logic.
+
+## Roadmap
+
+- [ ] **`--infer` semantic layer.** Optional AI-assisted pass on top of the
+      structural result: detect likely enums from repeated string values,
+      recognize date/UUID/email-shaped strings, and produce more confident
+      unions from limited samples. Off by default — the deterministic core
+      never requires an API key.
+- [ ] **MCP tool.** Expose the same core engine as an MCP tool so coding
+      agents (Claude Code, etc.) can call it directly instead of pasting raw
+      JSON into their own context to reason out types inline — cheaper,
+      faster, and deterministic across runs.
+- [ ] **Drift detection / watch mode.** Point it at an endpoint on a
+      schedule; open a PR when the inferred shape changes.
+- [ ] **Editor integration.** Generate types inline from a REST client
+      response (Thunder Client, `.http` files, etc).
+
+## Development
+
+```bash
+npm install
+npm run build   # compile src/ -> dist/
+npm test        # vitest
+echo '{"id":1}' | npm run dev -- --name User   # run the CLI from source via tsx
+```
+
+## License
+
+MIT
