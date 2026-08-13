@@ -4,14 +4,12 @@
   "description": "Pipe a JSON API response in, get a TypeScript interface + Zod schema out. Deduces types instead of guessing them.",
   "type": "module",
   "bin": {
-    "typesherlock": "./dist/cli.js",
-    "typesherlock-multi-fetch": "./scripts/multi-fetch.sh"
+    "typesherlock": "./dist/cli.js"
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "files": [
-    "dist",
-    "scripts"
+    "dist"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",

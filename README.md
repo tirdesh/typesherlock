@@ -55,6 +55,10 @@ Options:
   -h, --help       Show this help
 ```
 
+There's also a `fetch` subcommand that calls URLs directly instead of reading
+stdin — see [Gathering multiple real samples](#gathering-multiple-real-samples-in-one-command)
+below.
+
 ### Multiple samples (success + error shapes)
 
 If you pipe in a JSON array where every element is an object, `typesherlock`
@@ -90,41 +94,39 @@ are treated as sample sets, since that's the unambiguous case.)
 #### Gathering multiple real samples in one command
 
 Building that `[sample1, sample2]` array by hand from separate `curl` calls
-is tedious. `multi-fetch.sh`, bundled with this package, does the fetching
-for you and prints the combined array on stdout — it's a thin wrapper around
-the real system `curl` (one call per URL), not a new HTTP client:
+is tedious. The `fetch` subcommand does the calling for you, in one command,
+using Node's built-in `fetch` — no separate script, no `curl` dependency:
 
 If only one part of the URL varies (e.g. an ID), pass a template with a `{}`
 placeholder and the values to substitute — no need to retype the base URL:
 
 ```bash
-npx typesherlock-multi-fetch "https://api.example.com/users/{}" 1 2 999 \
-  | typesherlock --name User --zod
+typesherlock fetch "https://api.example.com/users/{}" 1 2 999 --name User --zod
 ```
 
 Or spell out full, unrelated URLs if they don't share a common pattern:
 
 ```bash
-npx typesherlock-multi-fetch \
+typesherlock fetch \
   https://api.example.com/users/1 \
   https://api.example.com/other-endpoint \
-  | typesherlock --name User --zod
+  --name User --zod
 ```
 
 Either way, this is the same result as calling `curl` for each one and
 hand-assembling the array — just one command instead of several. Extra
-`curl` flags (e.g. an auth header) can be passed via the `CURL_ARGS`
-environment variable:
+request headers (e.g. an auth token) can be passed with `--header`, repeatable:
 
 ```bash
-CURL_ARGS='-H "Authorization: Bearer $TOKEN"' \
-  npx typesherlock-multi-fetch https://api.example.com/users/1 https://api.example.com/users/999
+typesherlock fetch https://api.example.com/users/1 https://api.example.com/users/999 \
+  --header "Authorization: Bearer $TOKEN" --name User
 ```
 
-Note this is a convenience script, not part of the core tool: `typesherlock`
-itself still makes zero network calls and only ever reads stdin — the
-network access here is isolated to this one opt-in script, which just does
-what you'd otherwise type by hand.
+Every fetched response is merged as a separate sample, exactly like piping a
+JSON array into the default stdin mode — including optional-field, union, and
+enum detection from real evidence across the calls. Run `typesherlock fetch
+--help` for the full option list. This subcommand is the only part of
+typesherlock that makes network calls; the default stdin mode never does.
 
 ## What it does (and doesn't) do
 
