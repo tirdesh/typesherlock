@@ -94,17 +94,27 @@ is tedious. `multi-fetch.sh`, bundled with this package, does the fetching
 for you and prints the combined array on stdout — it's a thin wrapper around
 the real system `curl` (one call per URL), not a new HTTP client:
 
+If only one part of the URL varies (e.g. an ID), pass a template with a `{}`
+placeholder and the values to substitute — no need to retype the base URL:
+
 ```bash
-npx typesherlock-multi-fetch \
-  https://api.example.com/users/1 \
-  https://api.example.com/users/2 \
-  https://api.example.com/users/999 \
+npx typesherlock-multi-fetch "https://api.example.com/users/{}" 1 2 999 \
   | typesherlock --name User --zod
 ```
 
-This is the same result as calling `curl` three times and hand-assembling
-the array — just one command instead of several. Extra `curl` flags (e.g.
-an auth header) can be passed via the `CURL_ARGS` environment variable:
+Or spell out full, unrelated URLs if they don't share a common pattern:
+
+```bash
+npx typesherlock-multi-fetch \
+  https://api.example.com/users/1 \
+  https://api.example.com/other-endpoint \
+  | typesherlock --name User --zod
+```
+
+Either way, this is the same result as calling `curl` for each one and
+hand-assembling the array — just one command instead of several. Extra
+`curl` flags (e.g. an auth header) can be passed via the `CURL_ARGS`
+environment variable:
 
 ```bash
 CURL_ARGS='-H "Authorization: Bearer $TOKEN"' \
