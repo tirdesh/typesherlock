@@ -45,8 +45,8 @@ function typeOfObject(obj: Record<string, unknown>): InferredType {
   return { kind: "object", fields };
 }
 
-/** Structural equality check, used to dedupe union members. */
-function typesEqual(a: InferredType, b: InferredType): boolean {
+/** Structural equality check, used to dedupe union members and interface names. */
+export function typesEqual(a: InferredType, b: InferredType): boolean {
   if (a.kind !== b.kind) return false;
   if (a.kind === "array" && b.kind === "array") {
     return typesEqual(a.items, b.items);

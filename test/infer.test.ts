@@ -101,6 +101,34 @@ describe("generateTypeScript", () => {
     const { typescript } = generateTypeScript(type, { rootName: "Headers" });
     expect(typescript).toContain('"content-type": string;');
   });
+
+  it("renders an empty object as an empty interface, not a blank line", () => {
+    const type = inferFromSamples([{}]);
+    const { typescript } = generateTypeScript(type, { rootName: "Empty" });
+    expect(typescript.trim()).toBe("export interface Empty {}");
+  });
+
+  it("disambiguates differently-shaped nested objects that share a generated name", () => {
+    // "user-name" and "user_name" both pascal-case to "RootUserName" but have
+    // different fields — they must not collapse into one interface and drop data.
+    const type = inferFromSamples([
+      { "user-name": { a: 1 }, user_name: { b: "s" } },
+    ]);
+    const { typescript } = generateTypeScript(type, { rootName: "Root" });
+    expect(typescript).toContain("export interface RootUserName {");
+    expect(typescript).toContain("a: number;");
+    expect(typescript).toContain("export interface RootUserName2 {");
+    expect(typescript).toContain("b: string;");
+  });
+
+  it("reuses the same name for identically-shaped objects at the same generated name", () => {
+    const type = inferFromSamples([{ a: { x: 1 }, b: { x: 1 } }]);
+    const { typescript } = generateTypeScript(type, { rootName: "Root" });
+    // RootA and RootB are different generated names (named by path), so both
+    // should exist independently rather than being merged or renamed.
+    expect(typescript).toContain("export interface RootA {");
+    expect(typescript).toContain("export interface RootB {");
+  });
 });
 
 describe("generateZodSchema", () => {

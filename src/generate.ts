@@ -1,4 +1,4 @@
-import type { FieldType, InferredType } from "./infer.js";
+import { typesEqual, type InferredType } from "./infer.js";
 
 const VALID_IDENTIFIER = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
 
@@ -18,7 +18,32 @@ function pascalCase(name: string): string {
 interface GenContext {
   /** name -> rendered TS interface body, collected as nested objects are visited */
   interfaces: Map<string, string>;
+  /** name -> the object shape currently occupying that name, so collisions between
+   * differently-shaped objects that pascal-case to the same name can be detected
+   * instead of silently merged into one (dropping whichever fields don't match). */
+  shapesByName: Map<string, InferredType>;
   rootName: string;
+}
+
+/**
+ * Resolve a name for `shape`, reusing `baseName` if it's free or already holds an
+ * identical shape, otherwise appending a numeric suffix (2, 3, ...) until one does.
+ */
+function resolveName(
+  baseName: string,
+  shape: InferredType,
+  ctx: GenContext
+): { name: string; isNew: boolean } {
+  let candidate = baseName;
+  let suffix = 2;
+  while (ctx.shapesByName.has(candidate)) {
+    if (typesEqual(ctx.shapesByName.get(candidate)!, shape)) {
+      return { name: candidate, isNew: false };
+    }
+    candidate = `${baseName}${suffix++}`;
+  }
+  ctx.shapesByName.set(candidate, shape);
+  return { name: candidate, isNew: true };
 }
 
 function tsTypeOf(type: InferredType, path: string[], ctx: GenContext): string {
@@ -38,27 +63,30 @@ function tsTypeOf(type: InferredType, path: string[], ctx: GenContext): string {
     case "union":
       return type.options.map((o) => tsTypeOf(o, path, ctx)).join(" | ");
     case "object": {
-      const name = pascalCase(path.join(" "));
-      registerInterface(name, type.fields, ctx);
-      return name;
+      const baseName = pascalCase(path.join(" "));
+      return registerInterface(baseName, type, ctx);
     }
   }
 }
 
 function registerInterface(
-  name: string,
-  fields: Record<string, FieldType>,
+  baseName: string,
+  shape: InferredType & { kind: "object" },
   ctx: GenContext
-): void {
-  if (ctx.interfaces.has(name)) return;
+): string {
+  const { name, isNew } = resolveName(baseName, shape, ctx);
+  if (!isNew) return name;
   // Reserve the name before recursing so self-referential shapes don't loop.
   ctx.interfaces.set(name, "");
+  const fields = shape.fields;
   const lines = Object.entries(fields).map(([key, field]) => {
     const tsType = tsTypeOf(field.type, [name, key], ctx);
     const optionalMark = field.optional ? "?" : "";
     return `  ${keyLiteral(key)}${optionalMark}: ${tsType};`;
   });
-  ctx.interfaces.set(name, `export interface ${name} {\n${lines.join("\n")}\n}`);
+  const body = lines.length > 0 ? `\n${lines.join("\n")}\n` : "";
+  ctx.interfaces.set(name, `export interface ${name} {${body}}`);
+  return name;
 }
 
 export interface GenerateOptions {
@@ -77,10 +105,10 @@ export function generateTypeScript(
   options: GenerateOptions = {}
 ): GenerateResult {
   const rootName = options.rootName ?? "Root";
-  const ctx: GenContext = { interfaces: new Map(), rootName };
+  const ctx: GenContext = { interfaces: new Map(), shapesByName: new Map(), rootName };
 
   if (type.kind === "object") {
-    registerInterface(rootName, type.fields, ctx);
+    registerInterface(rootName, type, ctx);
   } else {
     const aliasType = tsTypeOf(type, [rootName], ctx);
     ctx.interfaces.set(rootName, `export type ${rootName} = ${aliasType};`);
@@ -109,21 +137,23 @@ function zodExprOf(type: InferredType, path: string[], ctx: GenContext): string 
         .map((o) => zodExprOf(o, path, ctx))
         .join(", ")}])`;
     case "object": {
-      const name = pascalCase(path.join(" "));
-      registerZodSchema(name, type.fields, ctx);
+      const baseName = pascalCase(path.join(" "));
+      const name = registerZodSchema(baseName, type, ctx);
       return `${name}Schema`;
     }
   }
 }
 
 function registerZodSchema(
-  name: string,
-  fields: Record<string, FieldType>,
+  baseName: string,
+  shape: InferredType & { kind: "object" },
   ctx: GenContext
-): void {
+): string {
+  const { name, isNew } = resolveName(baseName, shape, ctx);
   const schemaName = `${name}Schema`;
-  if (ctx.interfaces.has(schemaName)) return;
+  if (!isNew) return name;
   ctx.interfaces.set(schemaName, "");
+  const fields = shape.fields;
   const lines = Object.entries(fields).map(([key, field]) => {
     let expr = zodExprOf(field.type, [name, key], ctx);
     if (field.optional) expr += ".optional()";
@@ -133,6 +163,7 @@ function registerZodSchema(
     schemaName,
     `export const ${schemaName} = z.object({\n${lines.join("\n")}\n});`
   );
+  return name;
 }
 
 /** Render an inferred type tree into one or more exported Zod schemas. */
@@ -141,10 +172,10 @@ export function generateZodSchema(
   options: GenerateOptions = {}
 ): GenerateResult {
   const rootName = options.rootName ?? "Root";
-  const ctx: GenContext = { interfaces: new Map(), rootName };
+  const ctx: GenContext = { interfaces: new Map(), shapesByName: new Map(), rootName };
 
   if (type.kind === "object") {
-    registerZodSchema(rootName, type.fields, ctx);
+    registerZodSchema(rootName, type, ctx);
   } else {
     const expr = zodExprOf(type, [rootName], ctx);
     ctx.interfaces.set(`${rootName}Schema`, `export const ${rootName}Schema = ${expr};`);
