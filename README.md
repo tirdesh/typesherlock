@@ -35,10 +35,6 @@ The MCP server below is a local stdio process for the same reason.
 
 ## Install
 
-> **Not yet published to npm.** Until then: clone this repo, run
-> `npm install && npm run build`, then use `node dist/cli.js` in place of
-> `typesherlock` below (or `npm link` for the real command locally).
-
 ```bash
 npm install -g typesherlock
 # or, without installing:
