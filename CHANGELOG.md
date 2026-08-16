@@ -23,3 +23,5 @@ Initial release.
 - `fetch` subcommand: gather real samples directly by URL (with `{}`
   templating and `--header` support), using Node's built-in `fetch`.
 - `--cache`: persist and merge the inferred type across separate invocations.
+- MCP server (`typesherlock-mcp`) exposing a `generate_types` tool backed by
+  the same core engine, for coding agents to call directly.

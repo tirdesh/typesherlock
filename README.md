@@ -106,6 +106,23 @@ Saves the inferred type to a local file and merges it with each new run, so
 accuracy improves across ordinary everyday use without manually assembling a
 sample array. Works with stdin mode too.
 
+## MCP server — for coding agents
+
+```json
+{
+  "mcpServers": {
+    "typesherlock": { "command": "npx", "args": ["typesherlock-mcp"] }
+  }
+}
+```
+
+Exposes a `generate_types` tool with the same `json` / `name` / `zod` /
+`cacheFile` options as the CLI, so an agent (Claude Code, etc.) can get
+accurate types directly from a tool call instead of pasting raw JSON into its
+own context to reason out a shape inline — deterministic, and reusable across
+calls via the same `--cache` mechanism. Uses the identical core engine as the
+CLI; no separate logic to keep in sync.
+
 ## What it detects
 
 No AI, no API key, ever — everything below is deterministic regex/structural/
@@ -136,7 +153,7 @@ the stdin/stdout wrapper.
 
 ## Roadmap
 
-- [ ] MCP tool exposing the same core engine to coding agents
+- [x] MCP tool exposing the same core engine to coding agents (see above)
 - [ ] AI layer for genuinely ambiguous cases only (off by default)
 - [ ] Drift detection / watch mode
 - [ ] Editor integration

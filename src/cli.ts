@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { readFileSync, writeFileSync } from "node:fs";
-import { inferFromSamples, mergeTypes, type InferredType } from "./infer.js";
+import { inferFromSamples, mergeTypes, toSamples, type InferredType } from "./infer.js";
 import { generateTypeScript, generateZodSchema } from "./generate.js";
 
 class CliArgError extends Error {}
@@ -142,21 +142,6 @@ async function readStdin(): Promise<string> {
     chunks.push(chunk as Buffer);
   }
   return Buffer.concat(chunks).toString("utf8");
-}
-
-function toSamples(parsed: unknown): unknown[] {
-  // A bare JSON array is ambiguous: it could be *the* payload (e.g. a list
-  // of users) or a set of samples to merge. Only treat it as "multiple
-  // samples" when every element is itself an object — the common case for
-  // hand-assembled sample sets — otherwise treat the array as one sample.
-  if (
-    Array.isArray(parsed) &&
-    parsed.length > 0 &&
-    parsed.every((el) => typeof el === "object" && el !== null && !Array.isArray(el))
-  ) {
-    return parsed;
-  }
-  return [parsed];
 }
 
 async function runStdin(argv: string[]): Promise<void> {

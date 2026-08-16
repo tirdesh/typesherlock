@@ -252,3 +252,21 @@ export function inferFromSamples(samples: unknown[]): InferredType {
   if (samples.length === 0) return { kind: "unknown" };
   return mergeAll(samples.map(typeOfValue));
 }
+
+/**
+ * Interpret a parsed JSON value as one or more samples. A bare array is
+ * ambiguous — it could be *the* payload (e.g. a list of users) or a set of
+ * samples to merge — so it's only treated as "multiple samples" when every
+ * element is itself an object (the common case for hand-assembled sample
+ * sets); otherwise the whole value is treated as one sample.
+ */
+export function toSamples(parsed: unknown): unknown[] {
+  if (
+    Array.isArray(parsed) &&
+    parsed.length > 0 &&
+    parsed.every((el) => typeof el === "object" && el !== null && !Array.isArray(el))
+  ) {
+    return parsed;
+  }
+  return [parsed];
+}
