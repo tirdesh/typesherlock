@@ -175,7 +175,9 @@ export function compatibleWithWildcard(a: InferredType, b: InferredType): boolea
   }
   if (a.kind === "union" && b.kind === "union") {
     if (a.options.length !== b.options.length) return false;
-    return a.options.every((opt) => b.options.some((o) => compatibleWithWildcard(opt, o)));
+    return a.options.every((opt) =>
+      b.options.some((o) => compatibleWithWildcard(opt, o))
+    );
   }
   return true;
 }
@@ -188,7 +190,9 @@ function mergeStringTypes(
   if (format) return { kind: "string", format };
   if (!a.values || !b.values) return { kind: "string" };
   const values = Array.from(new Set([...a.values, ...b.values]));
-  return values.length > VALUES_TRACK_CAP ? { kind: "string" } : { kind: "string", values };
+  return values.length > VALUES_TRACK_CAP
+    ? { kind: "string" }
+    : { kind: "string", values };
 }
 
 /** Merge two inferred types into one that describes both (union if incompatible). */
@@ -214,8 +218,7 @@ export function mergeTypes(a: InferredType, b: InferredType): InferredType {
         inA ? a.fields[key].type : { kind: "unknown" },
         inB ? b.fields[key].type : { kind: "unknown" }
       );
-      const optional =
-        !inA || !inB || a.fields[key].optional || b.fields[key].optional;
+      const optional = !inA || !inB || a.fields[key].optional || b.fields[key].optional;
       fields[key] = { type: fieldType, optional };
     }
     return { kind: "object", fields };
@@ -235,10 +238,9 @@ export function mergeTypes(a: InferredType, b: InferredType): InferredType {
 }
 
 function mergeAll(types: InferredType[]): InferredType {
-  return types.reduce(
-    (acc, t) => mergeTypes(acc, t),
-    { kind: "unknown" } as InferredType
-  );
+  return types.reduce((acc, t) => mergeTypes(acc, t), {
+    kind: "unknown",
+  } as InferredType);
 }
 
 /**

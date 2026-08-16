@@ -38,12 +38,14 @@ function keyLiteral(key: string): string {
 }
 
 function pascalCase(name: string): string {
-  return name
-    .replace(/[^A-Za-z0-9]+/g, " ")
-    .trim()
-    .split(" ")
-    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
-    .join("") || "Root";
+  return (
+    name
+      .replace(/[^A-Za-z0-9]+/g, " ")
+      .trim()
+      .split(" ")
+      .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+      .join("") || "Root"
+  );
 }
 
 interface GenContext {
@@ -182,7 +184,12 @@ export function generateTypeScript(
   options: GenerateOptions = {}
 ): GenerateResult {
   const rootName = options.rootName ?? "Root";
-  const ctx: GenContext = { interfaces: new Map(), shapesByName: new Map(), ancestors: [], rootName };
+  const ctx: GenContext = {
+    interfaces: new Map(),
+    shapesByName: new Map(),
+    ancestors: [],
+    rootName,
+  };
 
   if (type.kind === "object") {
     registerInterface([rootName], type, ctx);
@@ -220,9 +227,7 @@ function zodExprOf(type: InferredType, path: string[], ctx: GenContext): string 
     case "array":
       return `z.array(${zodExprOf(type.items, [...path, "Item"], ctx)})`;
     case "union":
-      return `z.union([${type.options
-        .map((o) => zodExprOf(o, path, ctx))
-        .join(", ")}])`;
+      return `z.union([${type.options.map((o) => zodExprOf(o, path, ctx)).join(", ")}])`;
     case "object": {
       const recursive = findRecursiveAncestor(type, ctx);
       const name = recursive ?? registerZodSchema(nameCandidates(path), type, ctx);
@@ -268,7 +273,12 @@ export function generateZodSchema(
   options: GenerateOptions = {}
 ): GenerateResult {
   const rootName = options.rootName ?? "Root";
-  const ctx: GenContext = { interfaces: new Map(), shapesByName: new Map(), ancestors: [], rootName };
+  const ctx: GenContext = {
+    interfaces: new Map(),
+    shapesByName: new Map(),
+    ancestors: [],
+    rootName,
+  };
 
   if (type.kind === "object") {
     registerZodSchema([rootName], type, ctx);

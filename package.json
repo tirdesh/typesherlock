@@ -8,6 +8,14 @@
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "sideEffects": false,
   "files": [
     "dist"
   ],
@@ -15,7 +23,10 @@
     "build": "tsc -p tsconfig.json",
     "dev": "tsx src/cli.ts",
     "test": "vitest run",
-    "prepublishOnly": "npm run build"
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "prepublishOnly": "npm run lint && npm run format:check && npm run build && npm test"
   },
   "keywords": [
     "typescript",
@@ -32,6 +43,10 @@
     "type": "git",
     "url": "git+https://github.com/tirdesh/typesherlock.git"
   },
+  "bugs": {
+    "url": "https://github.com/tirdesh/typesherlock/issues"
+  },
+  "homepage": "https://github.com/tirdesh/typesherlock#readme",
   "engines": {
     "node": ">=18"
   },
@@ -39,9 +54,14 @@
     "zod": "^3.23.8"
   },
   "devDependencies": {
-    "typescript": "^5.5.4",
+    "@eslint/js": "^9.39.5",
+    "@types/node": "^20.14.15",
+    "eslint": "^9.39.5",
+    "eslint-config-prettier": "^9.1.2",
+    "prettier": "^3.9.6",
     "tsx": "^4.16.2",
-    "vitest": "^2.0.5",
-    "@types/node": "^20.14.15"
+    "typescript": "^5.5.4",
+    "typescript-eslint": "^8.67.0",
+    "vitest": "^3.2.7"
   }
 }

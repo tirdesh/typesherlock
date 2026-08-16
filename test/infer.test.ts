@@ -78,9 +78,9 @@ describe("inferFromSamples", () => {
     expect(inferFromSamples(["2024-01-15T10:30:00Z"])).toMatchObject({
       format: "date-time",
     });
-    expect(
-      inferFromSamples(["550e8400-e29b-41d4-a716-446655440000"])
-    ).toMatchObject({ format: "uuid" });
+    expect(inferFromSamples(["550e8400-e29b-41d4-a716-446655440000"])).toMatchObject({
+      format: "uuid",
+    });
     expect(inferFromSamples(["ada@example.com"])).toMatchObject({ format: "email" });
     expect(inferFromSamples(["https://example.com/x"])).toMatchObject({ format: "url" });
     expect(inferFromSamples(["plain text"])).not.toHaveProperty("format");
@@ -89,7 +89,9 @@ describe("inferFromSamples", () => {
   it("treats a field with 2+ distinct values across separate samples as enum evidence", () => {
     const type = inferFromSamples([{ status: "active" }, { status: "pending" }]);
     expect(type).toMatchObject({
-      fields: { status: { type: { values: expect.arrayContaining(["active", "pending"]) } } },
+      fields: {
+        status: { type: { values: expect.arrayContaining(["active", "pending"]) } },
+      },
     });
   });
 
@@ -159,9 +161,7 @@ describe("generateTypeScript", () => {
     // ("UserName") but have different fields — they must not collapse into
     // one interface and drop data. The first one to be visited claims the
     // short name; the second falls back to its fully path-qualified name.
-    const type = inferFromSamples([
-      { "user-name": { a: 1 }, user_name: { b: "s" } },
-    ]);
+    const type = inferFromSamples([{ "user-name": { a: 1 }, user_name: { b: "s" } }]);
     const { typescript } = generateTypeScript(type, { rootName: "Root" });
     expect(typescript).toContain("export interface UserName {");
     expect(typescript).toContain("a: number;");
@@ -207,7 +207,9 @@ describe("generateTypeScript", () => {
   it("renders a closed-set field as a string literal union", () => {
     const type = inferFromSamples([{ status: "active" }, { status: "pending" }]);
     const { typescript } = generateTypeScript(type, { rootName: "Resp" });
-    expect(typescript).toMatch(/status: "active" \| "pending"|status: "pending" \| "active";/);
+    expect(typescript).toMatch(
+      /status: "active" \| "pending"|status: "pending" \| "active";/
+    );
   });
 
   it("adds a format comment for detected date/uuid/email/url fields", () => {
@@ -217,6 +219,7 @@ describe("generateTypeScript", () => {
   });
 
   it("flags integers beyond Number.MAX_SAFE_INTEGER with a warning comment", () => {
+    // eslint-disable-next-line no-loss-of-precision -- the precision loss is exactly what's under test
     const type = inferFromSamples([{ id: 123456789012345678901234, safe: 42 }]);
     const { typescript } = generateTypeScript(type, { rootName: "Resp" });
     expect(typescript).toContain("id: number; // WARNING:");
@@ -254,7 +257,9 @@ describe("generateZodSchema", () => {
   it("renders a closed-set field as z.enum(...)", () => {
     const type = inferFromSamples([{ status: "active" }, { status: "pending" }]);
     const { typescript } = generateZodSchema(type, { rootName: "Resp" });
-    expect(typescript).toMatch(/status: z\.enum\(\["active", "pending"\]|status: z\.enum\(\["pending", "active"\]/);
+    expect(typescript).toMatch(
+      /status: z\.enum\(\["active", "pending"\]|status: z\.enum\(\["pending", "active"\]/
+    );
   });
 
   it("renders detected formats as the matching zod validator", () => {

@@ -54,7 +54,9 @@ function emitTypes(samples: unknown[], opts: OutputOptions): number {
   const parts = [tsOut.trimEnd()];
 
   if (opts.zod) {
-    const { typescript: zodOut } = generateZodSchema(inferred, { rootName: opts.rootName });
+    const { typescript: zodOut } = generateZodSchema(inferred, {
+      rootName: opts.rootName,
+    });
     parts.push(zodOut.trimEnd());
   }
 
@@ -176,7 +178,9 @@ async function runStdin(argv: string[]): Promise<void> {
 
   const raw = await readStdin();
   if (!raw.trim()) {
-    process.stderr.write("typesherlock: no input on stdin. Try: curl <api> | typesherlock\n");
+    process.stderr.write(
+      "typesherlock: no input on stdin. Try: curl <api> | typesherlock\n"
+    );
     process.exitCode = 1;
     return;
   }
@@ -185,7 +189,9 @@ async function runStdin(argv: string[]): Promise<void> {
   try {
     parsed = JSON.parse(raw);
   } catch (err) {
-    process.stderr.write(`typesherlock: input is not valid JSON (${(err as Error).message})\n`);
+    process.stderr.write(
+      `typesherlock: input is not valid JSON (${(err as Error).message})\n`
+    );
     process.exitCode = 1;
     return;
   }

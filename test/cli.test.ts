@@ -26,7 +26,10 @@ describe("CLI end-to-end", () => {
 
   it("merges an array of sample objects into one type", () => {
     const out = runCli(
-      JSON.stringify([{ ok: true, data: 1 }, { ok: false, error: "x" }]),
+      JSON.stringify([
+        { ok: true, data: 1 },
+        { ok: false, error: "x" },
+      ]),
       ["--name", "Resp"]
     );
     expect(out).toContain("data?: number;");

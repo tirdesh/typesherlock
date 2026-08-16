@@ -38,7 +38,9 @@ describe("CLI fetch subcommand", () => {
         res.writeHead(404).end();
         return;
       }
-      res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(body));
+      res
+        .writeHead(200, { "Content-Type": "application/json" })
+        .end(JSON.stringify(body));
     });
     await new Promise<void>((resolve) => server.listen(0, resolve));
     const address = server.address();
@@ -79,7 +81,12 @@ describe("CLI fetch subcommand", () => {
   });
 
   it("errors cleanly on a non-2xx response instead of silently continuing", async () => {
-    const { status } = await runCli(["fetch", `${baseUrl}/characters/999`, "--name", "X"]);
+    const { status } = await runCli([
+      "fetch",
+      `${baseUrl}/characters/999`,
+      "--name",
+      "X",
+    ]);
     expect(status).not.toBe(0);
   });
 

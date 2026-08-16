@@ -1,10 +1,14 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { inferFromSamples } from "../src/infer.js";
 import { generateZodSchema } from "../src/generate.js";
+
+// Written inside the project (not os.tmpdir()): Vite's dev server restricts
+// serving/importing files outside its project root by default, which broke
+// this test's dynamic import() when it used a system temp directory.
+const scratchRoot = fileURLToPath(new URL("../.test-tmp/", import.meta.url));
 
 /**
  * Regression coverage for a real bug: generated Zod code that *looked*
@@ -18,7 +22,8 @@ import { generateZodSchema } from "../src/generate.js";
 const tempDirs: string[] = [];
 
 async function loadGeneratedSchema(typescript: string, schemaExport: string) {
-  const dir = mkdtempSync(join(tmpdir(), "typesherlock-zod-runtime-"));
+  mkdirSync(scratchRoot, { recursive: true });
+  const dir = mkdtempSync(join(scratchRoot, "run-"));
   tempDirs.push(dir);
   const file = join(dir, "schema.mjs");
   // generateZodSchema's output is already plain JS plus a `zod` import — no
