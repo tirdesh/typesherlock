@@ -1,6 +1,6 @@
 import {
   ENUM_MAX_VALUES,
-  compatibleWithWildcard,
+  looksRecursive,
   typesEqual,
   type InferredType,
   type StringFormat,
@@ -37,15 +37,94 @@ function keyLiteral(key: string): string {
   return VALID_IDENTIFIER.test(key) ? key : JSON.stringify(key);
 }
 
+/**
+ * A generated type name has to be a valid TypeScript identifier, which a JSON
+ * key is not obliged to be. Keys that begin with a digit are common enough in
+ * real payloads ("2fa_enabled", "3d_model", or a year key like "2024" in
+ * analytics/time-series responses) and would otherwise emit
+ * `export interface 3d {}`, which doesn't parse. Prefix those with "_".
+ */
+function ensureIdentifier(name: string): string {
+  if (!name) return "Root";
+  return /^[0-9]/.test(name) ? `_${name}` : name;
+}
+
 function pascalCase(name: string): string {
-  return (
-    name
-      .replace(/[^A-Za-z0-9]+/g, " ")
-      .trim()
-      .split(" ")
-      .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
-      .join("") || "Root"
-  );
+  const cleaned = name
+    .replace(/[^A-Za-z0-9]+/g, " ")
+    .trim()
+    .split(" ")
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join("");
+  return ensureIdentifier(cleaned);
+}
+
+const TS_RESERVED = new Set([
+  "break",
+  "case",
+  "catch",
+  "class",
+  "const",
+  "continue",
+  "debugger",
+  "default",
+  "delete",
+  "do",
+  "else",
+  "enum",
+  "export",
+  "extends",
+  "false",
+  "finally",
+  "for",
+  "function",
+  "if",
+  "import",
+  "in",
+  "instanceof",
+  "new",
+  "null",
+  "return",
+  "super",
+  "switch",
+  "this",
+  "throw",
+  "true",
+  "try",
+  "typeof",
+  "var",
+  "void",
+  "while",
+  "with",
+  "implements",
+  "interface",
+  "let",
+  "package",
+  "private",
+  "protected",
+  "public",
+  "static",
+  "yield",
+  "any",
+  "boolean",
+  "number",
+  "string",
+  "symbol",
+  "never",
+  "object",
+  "undefined",
+]);
+
+/**
+ * Sanitize a caller-supplied root name (CLI `--name`, MCP `name`). Unlike
+ * generated names this isn't re-cased — the caller's intent is preserved —
+ * but it still can't be allowed to produce uncompilable output.
+ */
+function rootIdentifier(name: string): string {
+  const cleaned = ensureIdentifier(name.replace(/[^A-Za-z0-9_$]/g, ""));
+  // `--name class` produced `export interface class {}` (TS2427). Generated
+  // (non-root) names escape this because pascalCase capitalizes them.
+  return TS_RESERVED.has(cleaned) ? `_${cleaned}` : cleaned;
 }
 
 interface GenContext {
@@ -56,8 +135,10 @@ interface GenContext {
    * instead of silently merged into one (dropping whichever fields don't match). */
   shapesByName: Map<string, InferredType>;
   /** Object shapes currently being generated, outermost first — used to detect
-   * recursive structures (see compatibleWithWildcard's doc comment). */
+   * recursive structures (see looksRecursive's doc comment). */
   ancestors: { name: string; shape: InferredType & { kind: "object" } }[];
+  /** Schema names that ended up referring to themselves (see registerZodSchema). */
+  selfReferential: Set<string>;
   rootName: string;
 }
 
@@ -68,7 +149,7 @@ function findRecursiveAncestor(
   ctx: GenContext
 ): string | undefined {
   for (let i = ctx.ancestors.length - 1; i >= 0; i--) {
-    if (compatibleWithWildcard(shape, ctx.ancestors[i].shape)) {
+    if (looksRecursive(shape, ctx.ancestors[i].shape)) {
       return ctx.ancestors[i].name;
     }
   }
@@ -133,8 +214,13 @@ function tsTypeOf(type: InferredType, path: string[], ctx: GenContext): string {
       return "null";
     case "unknown":
       return "unknown";
-    case "array":
-      return `${tsTypeOf(type.items, [...path, "Item"], ctx)}[]`;
+    case "array": {
+      // `A | B` + `[]` parses as `A | (B[])`, not `(A | B)[]` — so a
+      // heterogeneous array (`[item, null]` is everywhere in real payloads)
+      // silently produced a type its own input doesn't satisfy.
+      const item = tsTypeOf(type.items, [...path, "Item"], ctx);
+      return item.includes("|") ? `(${item})[]` : `${item}[]`;
+    }
     case "union":
       return type.options.map((o) => tsTypeOf(o, path, ctx)).join(" | ");
     case "object": {
@@ -183,17 +269,22 @@ export function generateTypeScript(
   type: InferredType,
   options: GenerateOptions = {}
 ): GenerateResult {
-  const rootName = options.rootName ?? "Root";
+  const rootName = rootIdentifier(options.rootName ?? "Root");
   const ctx: GenContext = {
     interfaces: new Map(),
     shapesByName: new Map(),
     ancestors: [],
+    selfReferential: new Set(),
     rootName,
   };
 
   if (type.kind === "object") {
     registerInterface([rootName], type, ctx);
   } else {
+    // Claim the root name first. Without this, a nested object could be
+    // assigned `rootName` and then have its interface overwritten by the
+    // alias written below, destroying it.
+    ctx.shapesByName.set(rootName, type);
     const aliasType = tsTypeOf(type, [rootName], ctx);
     ctx.interfaces.set(rootName, `export type ${rootName} = ${aliasType};`);
   }
@@ -230,6 +321,9 @@ function zodExprOf(type: InferredType, path: string[], ctx: GenContext): string 
       return `z.union([${type.options.map((o) => zodExprOf(o, path, ctx)).join(", ")}])`;
     case "object": {
       const recursive = findRecursiveAncestor(type, ctx);
+      // A hit here means this schema refers back to one still being built, so
+      // its `const` needs an explicit type annotation (see registerZodSchema).
+      if (recursive) ctx.selfReferential.add(recursive);
       const name = recursive ?? registerZodSchema(nameCandidates(path), type, ctx);
       // Always wrapped in z.lazy(), not just for detected recursive cases:
       // registerZodSchema reserves the *position* of the outer schema's own
@@ -257,12 +351,21 @@ function registerZodSchema(
   const lines = Object.entries(fields).map(([key, field]) => {
     let expr = zodExprOf(field.type, [name, key], ctx);
     if (field.optional) expr += ".optional()";
-    return `  ${keyLiteral(key)}: ${expr},`;
+    // `{ __proto__: x }` and `{ "__proto__": x }` both invoke the prototype
+    // setter rather than defining a property, so z.object() would never see
+    // the field. Only a computed key defines it.
+    const label = key === "__proto__" ? `["__proto__"]` : keyLiteral(key);
+    return `  ${label}: ${expr},`;
   });
   ctx.ancestors.pop();
+  // A self-referential const needs an explicit annotation, or tsc under
+  // `noImplicitAny` (i.e. `strict`, the default for new projects) rejects the
+  // emitted schema with TS7022 "implicitly has type 'any' because it does not
+  // have a type annotation and is referenced ... in its own initializer".
+  const annotation = ctx.selfReferential.has(name) ? ": z.ZodTypeAny" : "";
   ctx.interfaces.set(
     schemaName,
-    `export const ${schemaName} = z.object({\n${lines.join("\n")}\n});`
+    `export const ${schemaName}${annotation} = z.object({\n${lines.join("\n")}\n});`
   );
   return name;
 }
@@ -272,17 +375,19 @@ export function generateZodSchema(
   type: InferredType,
   options: GenerateOptions = {}
 ): GenerateResult {
-  const rootName = options.rootName ?? "Root";
+  const rootName = rootIdentifier(options.rootName ?? "Root");
   const ctx: GenContext = {
     interfaces: new Map(),
     shapesByName: new Map(),
     ancestors: [],
+    selfReferential: new Set(),
     rootName,
   };
 
   if (type.kind === "object") {
     registerZodSchema([rootName], type, ctx);
   } else {
+    ctx.shapesByName.set(rootName, type);
     const expr = zodExprOf(type, [rootName], ctx);
     ctx.interfaces.set(`${rootName}Schema`, `export const ${rootName}Schema = ${expr};`);
   }

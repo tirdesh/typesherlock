@@ -18,7 +18,8 @@
   },
   "sideEffects": false,
   "files": [
-    "dist"
+    "dist",
+    "CHANGELOG.md"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
@@ -53,7 +54,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
-    "zod": "^3.23.8"
+    "zod": "^3.25.0 || ^4.0.0"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.5",

@@ -28,6 +28,11 @@ scraped/reverse-engineered endpoints, or anything mid-development —
 `typesherlock` replaces hand-writing an interface from a JSON blob with one
 piped command.
 
+It runs entirely on your machine. Inference is local and deterministic, with
+no model calls and no API key, and your payloads are never uploaded anywhere —
+which matters when the response you're typing came from an internal service.
+The MCP server below is a local stdio process for the same reason.
+
 ## Install
 
 > **Not yet published to npm.** Until then: clone this repo, run

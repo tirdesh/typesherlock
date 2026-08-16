@@ -1,7 +1,8 @@
 #!/usr/bin/env node
-import { readFileSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { inferFromSamples, mergeTypes, toSamples, type InferredType } from "./infer.js";
 import { generateTypeScript, generateZodSchema } from "./generate.js";
+import { readCache, writeCache } from "./cache.js";
 
 class CliArgError extends Error {}
 
@@ -17,27 +18,27 @@ interface OutputOptions {
  * `opts.cacheFile` (if anything), and write the combined result back — so
  * accuracy (optional fields, enums, unions) accumulates for free across
  * ordinary separate invocations against the same endpoint, without the user
- * having to manually assemble a multi-sample array every time. InferredType
- * is a plain JSON-serializable tree, so the cache is just that, verbatim.
+ * having to manually assemble a multi-sample array every time.
+ *
+ * Throws if the path holds a file that isn't a typesherlock cache: overwriting
+ * it (the old behaviour) turned a single `--cache`/`-o` typo into silent data
+ * loss.
  */
 function resolveInferredType(samples: unknown[], cacheFile: string | null): InferredType {
   const newType = inferFromSamples(samples);
   if (!cacheFile) return newType;
 
-  let cached: InferredType | null = null;
-  try {
-    cached = JSON.parse(readFileSync(cacheFile, "utf8")) as InferredType;
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
-      process.stderr.write(
-        `typesherlock: ignoring unreadable cache at ${cacheFile} (${(err as Error).message})\n`
-      );
-    }
+  const cached = readCache(cacheFile);
+  if (cached.status === "foreign") {
+    throw new CliArgError(
+      `refusing to use ${cacheFile} as a cache: ${cached.reason}. ` +
+        `Delete it or choose another path (did you mean -o/--out?)`
+    );
   }
 
-  const merged = cached ? mergeTypes(cached, newType) : newType;
+  const merged = cached.status === "ok" ? mergeTypes(cached.type, newType) : newType;
   try {
-    writeFileSync(cacheFile, JSON.stringify(merged), "utf8");
+    writeCache(cacheFile, merged);
   } catch (err) {
     process.stderr.write(
       `typesherlock: couldn't update cache at ${cacheFile} (${(err as Error).message})\n`
@@ -161,6 +162,20 @@ async function runStdin(argv: string[]): Promise<void> {
     return;
   }
 
+  // Without this, running bare `typesherlock` in a terminal just blocks on
+  // stdin forever with no output — which is the very first thing someone
+  // types after installing it.
+  if (process.stdin.isTTY) {
+    process.stderr.write(
+      "typesherlock: no input on stdin. Try one of:\n" +
+        "  curl <api> | typesherlock --name User\n" +
+        "  typesherlock fetch <url> --name User\n" +
+        "  typesherlock --help\n"
+    );
+    process.exitCode = 1;
+    return;
+  }
+
   const raw = await readStdin();
   if (!raw.trim()) {
     process.stderr.write(
@@ -181,7 +196,16 @@ async function runStdin(argv: string[]): Promise<void> {
     return;
   }
 
-  process.exitCode = emitTypes(toSamples(parsed), opts);
+  try {
+    process.exitCode = emitTypes(toSamples(parsed), opts);
+  } catch (err) {
+    if (err instanceof CliArgError) {
+      process.stderr.write(`typesherlock: ${err.message}\n`);
+      process.exitCode = 1;
+      return;
+    }
+    throw err;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -264,7 +288,10 @@ function parseFetchArgs(argv: string[]): FetchOptions {
       if (values.length === 0) {
         throw new CliArgError("template given but no values to substitute into it");
       }
-      opts.urls = values.map((v) => template.split("{}").join(v));
+      // Encoded, not interpolated raw: a value containing & # ? / + would
+      // otherwise silently restructure the request (`a b&c=d#e` became an
+      // extra query parameter plus a dropped fragment).
+      opts.urls = values.map((v) => template.split("{}").join(encodeURIComponent(v)));
     } else {
       opts.urls = positionals;
     }
@@ -275,7 +302,13 @@ function parseFetchArgs(argv: string[]): FetchOptions {
 function parseHeader(raw: string): [string, string] {
   const idx = raw.indexOf(":");
   if (idx === -1) {
-    throw new CliArgError(`--header value must look like "Key: Value", got '${raw}'`);
+    // Deliberately does not echo `raw`: a missing colon is exactly the typo
+    // someone makes while passing a bearer token, and the error stream ends
+    // up in CI logs and shell history.
+    const hint = raw.split(/\s+/)[0] || "<empty>";
+    throw new CliArgError(
+      `--header value must look like "Key: Value" (got something starting with '${hint}' — value not echoed in case it contains a secret)`
+    );
   }
   return [raw.slice(0, idx).trim(), raw.slice(idx + 1).trim()];
 }
@@ -288,7 +321,11 @@ async function fetchSamples(urls: string[], rawHeaders: string[]): Promise<unkno
     try {
       res = await fetch(url, { headers });
     } catch (err) {
-      throw new CliArgError(`couldn't reach ${url} (${(err as Error).message})`);
+      // Node collapses every transport failure into "fetch failed"; the real
+      // reason (bad TLS cert, DNS failure, connection refused) is on .cause.
+      const cause = (err as { cause?: { message?: string; code?: string } }).cause;
+      const detail = cause?.code ?? cause?.message ?? (err as Error).message;
+      throw new CliArgError(`couldn't fetch ${url} (${detail})`);
     }
     if (!res.ok) {
       throw new CliArgError(`${url} returned HTTP ${res.status}`);

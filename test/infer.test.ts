@@ -281,9 +281,14 @@ describe("generateZodSchema", () => {
     // assigned) — z.lazy() defers evaluation, so this must actually work,
     // not just look right as a string.
     const { z } = await import("zod");
-    // `new Function` bodies aren't modules, so strip the `export` keywords
-    // (the import line was already stripped, we only need the const decls).
-    const body = typescript.replace(/^import .*;\n\n/, "").replace(/export /g, "");
+    // `new Function` bodies aren't modules and aren't TypeScript, so strip the
+    // `export` keywords and the `: z.ZodTypeAny` annotation that recursive
+    // schemas carry (see registerZodSchema — tsc needs it, plain JS can't
+    // parse it). The import line was already stripped.
+    const body = typescript
+      .replace(/^import .*;\n\n/, "")
+      .replace(/export /g, "")
+      .replace(/: z\.ZodTypeAny/g, "");
     const schema = new Function("z", `${body}\nreturn CommentSchema;`)(z);
     const result = schema.safeParse({
       id: 1,

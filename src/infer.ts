@@ -42,6 +42,27 @@ export interface FieldType {
   optional: boolean;
 }
 
+/**
+ * Field maps are built with a null prototype, and membership is tested with
+ * hasOwnProperty rather than `in`, because JSON keys are arbitrary strings
+ * that can collide with `Object.prototype`:
+ *
+ *   - assigning `fields["__proto__"] = ...` on a normal `{}` hits the
+ *     prototype setter instead of creating a property, silently dropping
+ *     that field from the generated type;
+ *   - `"toString" in fields` is true on a normal `{}` even when the key was
+ *     never seen, which made merging a cached type (revived by JSON.parse,
+ *     so normal-prototyped) against a sample containing a `toString` key
+ *     read `Object.prototype.toString.type` and crash.
+ */
+function emptyFields(): Record<string, FieldType> {
+  return Object.create(null) as Record<string, FieldType>;
+}
+
+function hasField(fields: Record<string, FieldType>, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(fields, key);
+}
+
 /** Above this many distinct values, a field is clearly free text, not an enum. */
 const VALUES_TRACK_CAP = 20;
 
@@ -76,7 +97,7 @@ function stripEnumCandidacy(type: InferredType): InferredType {
     case "array":
       return { kind: "array", items: stripEnumCandidacy(type.items) };
     case "object": {
-      const fields: Record<string, FieldType> = {};
+      const fields = emptyFields();
       for (const [key, field] of Object.entries(type.fields)) {
         fields[key] = { type: stripEnumCandidacy(field.type), optional: field.optional };
       }
@@ -113,16 +134,38 @@ function typeOfValue(value: unknown): InferredType {
 }
 
 function typeOfObject(obj: Record<string, unknown>): InferredType {
-  const fields: Record<string, FieldType> = {};
+  const fields = emptyFields();
   for (const [key, value] of Object.entries(obj)) {
     fields[key] = { type: typeOfValue(value), optional: false };
   }
   return { kind: "object", fields };
 }
 
-/** Structural equality check, used to dedupe union members and interface names. */
+function sameStringSet(a: string[] | undefined, b: string[] | undefined): boolean {
+  if (a === undefined || b === undefined) return a === b;
+  if (a.length !== b.length) return false;
+  const bSet = new Set(b);
+  return a.every((v) => bSet.has(v));
+}
+
+/**
+ * Structural equality, used to dedupe union members and to decide whether two
+ * shapes may share a generated interface name.
+ *
+ * This deliberately compares string `format`/`values` and numeric `lossy` too.
+ * When it ignored them, two objects with the same field *names* but different
+ * enum evidence (`{kind: "admin"|"guest"}` vs `{kind: "text"|"video"}`) were
+ * judged equal and collapsed into a single interface, so one of them ended up
+ * described by the other's enum — a schema that rejects its own input.
+ */
 export function typesEqual(a: InferredType, b: InferredType): boolean {
   if (a.kind !== b.kind) return false;
+  if (a.kind === "string" && b.kind === "string") {
+    return a.format === b.format && sameStringSet(a.values, b.values);
+  }
+  if (a.kind === "number" && b.kind === "number") {
+    return Boolean(a.lossy) === Boolean(b.lossy);
+  }
   if (a.kind === "array" && b.kind === "array") {
     return typesEqual(a.items, b.items);
   }
@@ -154,6 +197,9 @@ export function typesEqual(a: InferredType, b: InferredType): boolean {
  * a dead-end `unknown[]` — a human writing this by hand would just write
  * `replies: Comment[]` recursively, using their own judgment to fill the gap
  * sample data alone can't.
+ *
+ * Compatibility alone is too weak to conclude "recursive", though — see
+ * looksRecursive.
  */
 export function compatibleWithWildcard(a: InferredType, b: InferredType): boolean {
   if (a.kind === "unknown" || b.kind === "unknown") return true;
@@ -178,6 +224,74 @@ export function compatibleWithWildcard(a: InferredType, b: InferredType): boolea
     return a.options.every((opt) =>
       b.options.some((o) => compatibleWithWildcard(opt, o))
     );
+  }
+  return true;
+}
+
+/**
+ * Should `shape` be rendered as a reference back to ancestor `candidate`
+ * instead of getting its own interface?
+ *
+ * Wildcard compatibility on its own says yes far too readily, because
+ * "unknown" (which only ever comes from an empty array) matches entire
+ * subtrees. A payload like
+ *
+ *   {"rows": [], "groups": [{"rows": [{id, label, score}], "groups": []}]}
+ *
+ * has two shapes that are wildcard-compatible purely *because* of the empty
+ * arrays, with nothing concrete lining up — and collapsing them threw away
+ * the {id, label, score} interface entirely. So require at least one field
+ * that matches concretely, with no wildcard involved: in a genuine
+ * `{id, replies}` comment tree, `id: number` is that anchor.
+ *
+ * The cost is that a single-field self-referential shape (`{"children": [...]}`
+ * and nothing else) no longer collapses — it gets its own named interface.
+ * That output is still correct, just less elegant, which is the right side to
+ * err on versus silently deleting a type the user just piped in.
+ */
+export function looksRecursive(
+  shape: InferredType & { kind: "object" },
+  candidate: InferredType & { kind: "object" }
+): boolean {
+  if (!compatibleWithWildcard(shape, candidate)) return false;
+  return Object.keys(shape.fields).some(
+    (key) =>
+      hasField(candidate.fields, key) &&
+      concretelyEqual(shape.fields[key].type, candidate.fields[key].type)
+  );
+}
+
+/**
+ * The anchor test for looksRecursive: a structural match that ignores string
+ * `values`/`format` and numeric `lossy`, but — unlike compatibleWithWildcard —
+ * never lets `unknown` stand in for a real type.
+ *
+ * Metadata has to be ignored because it legitimately differs between levels of
+ * a recursive structure: in a `{name, children}` tree the outer `name` has been
+ * seen with different values than the inner one, so strict typesEqual would
+ * reject the very anchor that proves the recursion.
+ */
+function concretelyEqual(a: InferredType, b: InferredType): boolean {
+  if (a.kind === "unknown" || b.kind === "unknown") return false;
+  if (a.kind !== b.kind) return false;
+  if (a.kind === "array" && b.kind === "array") {
+    return concretelyEqual(a.items, b.items);
+  }
+  if (a.kind === "object" && b.kind === "object") {
+    const aKeys = Object.keys(a.fields).sort();
+    const bKeys = Object.keys(b.fields).sort();
+    if (aKeys.length !== bKeys.length || aKeys.some((k, i) => k !== bKeys[i])) {
+      return false;
+    }
+    return aKeys.every(
+      (k) =>
+        a.fields[k].optional === b.fields[k].optional &&
+        concretelyEqual(a.fields[k].type, b.fields[k].type)
+    );
+  }
+  if (a.kind === "union" && b.kind === "union") {
+    if (a.options.length !== b.options.length) return false;
+    return a.options.every((opt) => b.options.some((o) => concretelyEqual(opt, o)));
   }
   return true;
 }
@@ -210,10 +324,10 @@ export function mergeTypes(a: InferredType, b: InferredType): InferredType {
   // whose string fields have different enum-candidate values.
   if (a.kind === "object" && b.kind === "object") {
     const keys = new Set([...Object.keys(a.fields), ...Object.keys(b.fields)]);
-    const fields: Record<string, FieldType> = {};
+    const fields = emptyFields();
     for (const key of keys) {
-      const inA = key in a.fields;
-      const inB = key in b.fields;
+      const inA = hasField(a.fields, key);
+      const inB = hasField(b.fields, key);
       const fieldType = mergeTypes(
         inA ? a.fields[key].type : { kind: "unknown" },
         inB ? b.fields[key].type : { kind: "unknown" }
@@ -232,6 +346,19 @@ export function mergeTypes(a: InferredType, b: InferredType): InferredType {
   const bOptions = b.kind === "union" ? b.options : [b];
   const merged: InferredType[] = [];
   for (const opt of [...aOptions, ...bOptions]) {
+    // A union holds at most one string member and one number member, and new
+    // ones are folded *into* it rather than deduped away. Skipping them made
+    // the result depend on sample order: for a nullable enum, a `null` sample
+    // arriving mid-stream froze the string member, so later values were
+    // dropped and the emitted z.enum([...]) rejected the very data it was
+    // generated from.
+    const foldable = merged.findIndex(
+      (m) => m.kind === opt.kind && (m.kind === "string" || m.kind === "number")
+    );
+    if (foldable !== -1) {
+      merged[foldable] = mergeTypes(merged[foldable], opt);
+      continue;
+    }
     if (!merged.some((m) => typesEqual(m, opt))) merged.push(opt);
   }
   return merged.length === 1 ? merged[0] : { kind: "union", options: merged };
@@ -269,4 +396,39 @@ export function toSamples(parsed: unknown): unknown[] {
     return parsed;
   }
   return [parsed];
+}
+
+/**
+ * Runtime shape check for a value claiming to be an InferredType — in practice,
+ * one revived from a cache file that could have been hand-edited, truncated by
+ * an interrupted write, written by a future version, or simply never ours.
+ * The generators switch exhaustively on `kind` with no fallback, so an
+ * unrecognized node would otherwise render as `undefined` and silently emit
+ * uncompilable output.
+ */
+export function isInferredType(value: unknown): value is InferredType {
+  if (typeof value !== "object" || value === null) return false;
+  const node = value as Record<string, unknown>;
+  switch (node.kind) {
+    case "string":
+    case "number":
+    case "boolean":
+    case "null":
+    case "unknown":
+      return true;
+    case "array":
+      return isInferredType(node.items);
+    case "object": {
+      if (typeof node.fields !== "object" || node.fields === null) return false;
+      return Object.values(node.fields as Record<string, unknown>).every((field) => {
+        if (typeof field !== "object" || field === null) return false;
+        const f = field as Record<string, unknown>;
+        return typeof f.optional === "boolean" && isInferredType(f.type);
+      });
+    }
+    case "union":
+      return Array.isArray(node.options) && node.options.every(isInferredType);
+    default:
+      return false;
+  }
 }

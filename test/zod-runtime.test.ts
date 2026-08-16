@@ -25,9 +25,10 @@ async function loadGeneratedSchema(typescript: string, schemaExport: string) {
   mkdirSync(scratchRoot, { recursive: true });
   const dir = mkdtempSync(join(scratchRoot, "run-"));
   tempDirs.push(dir);
-  const file = join(dir, "schema.mjs");
-  // generateZodSchema's output is already plain JS plus a `zod` import — no
-  // TS-only syntax to strip.
+  // Written as .ts, not .mjs: recursive schemas carry a `: z.ZodTypeAny`
+  // annotation that tsc requires but plain JS can't parse. Vitest transforms
+  // the .ts on import, so this also proves the annotation is itself valid.
+  const file = join(dir, "schema.ts");
   writeFileSync(file, typescript, "utf8");
   const mod = await import(pathToFileURL(file).href);
   return mod[schemaExport];

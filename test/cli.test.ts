@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -80,8 +80,39 @@ describe("CLI --cache", () => {
     expect(out2).toContain('status: "active" | "pending";');
   });
 
-  it("continues (with a warning) instead of crashing on a corrupt cache file", () => {
+  // These all guard the same rule: --cache takes a path, and a typo (or
+  // `--cache` where `-o` was meant) must never destroy whatever is there.
+  it("refuses to overwrite a file that isn't a typesherlock cache", () => {
+    const victim = path.join(dir, "important.json");
+    const original = JSON.stringify({ precious: true });
+    writeFileSync(victim, original);
+
+    expect(() =>
+      runCli(JSON.stringify({ id: 1 }), ["--name", "X", "--cache", victim])
+    ).toThrow();
+    expect(readFileSync(victim, "utf8")).toBe(original);
+  });
+
+  it("refuses a cache file that isn't valid JSON, leaving it untouched", () => {
     writeFileSync(cacheFile, "not json");
+    expect(() =>
+      runCli(JSON.stringify({ id: 1 }), ["--name", "X", "--cache", cacheFile])
+    ).toThrow();
+    expect(readFileSync(cacheFile, "utf8")).toBe("not json");
+  });
+
+  it("refuses valid JSON that isn't a type tree, instead of emitting broken output", () => {
+    // This used to be merged in anyway, producing `export type Root =  | Root;`
+    // with exit code 0 — and the corruption was written back, so every later
+    // run stayed broken.
+    writeFileSync(cacheFile, JSON.stringify({ foo: 1 }));
+    expect(() =>
+      runCli(JSON.stringify({ id: 1 }), ["--name", "X", "--cache", cacheFile])
+    ).toThrow();
+  });
+
+  it("treats an empty file as an empty cache rather than a foreign one", () => {
+    writeFileSync(cacheFile, "");
     const out = runCli(JSON.stringify({ id: 1 }), ["--name", "X", "--cache", cacheFile]);
     expect(out).toContain("export interface X {");
   });

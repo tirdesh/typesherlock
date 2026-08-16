@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { readFileSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { z } from "zod";
-import { inferFromSamples, mergeTypes, toSamples, type InferredType } from "./infer.js";
+import { inferFromSamples, mergeTypes, toSamples } from "./infer.js";
 import { generateTypeScript, generateZodSchema } from "./generate.js";
+import { readCache, writeCache } from "./cache.js";
 
 /**
  * Exposes typesherlock's core engine (no CLI/stdin coupling) to MCP clients
@@ -14,15 +15,12 @@ import { generateTypeScript, generateZodSchema } from "./generate.js";
  * pasting raw JSON into its own context to work out types inline.
  */
 
-const server = new McpServer({ name: "typesherlock", version: "0.1.0" });
+// Read from package.json rather than hardcoded, so it can't drift.
+const { version } = createRequire(import.meta.url)("../package.json") as {
+  version: string;
+};
 
-function readCache(cacheFile: string): InferredType | null {
-  try {
-    return JSON.parse(readFileSync(cacheFile, "utf8")) as InferredType;
-  } catch {
-    return null;
-  }
-}
+const server = new McpServer({ name: "typesherlock", version });
 
 server.registerTool(
   "generate_types",
@@ -69,11 +67,27 @@ server.registerTool(
     }
 
     const newType = inferFromSamples(toSamples(parsed));
-    const cached = cacheFile ? readCache(cacheFile) : null;
-    const inferred = cached ? mergeTypes(cached, newType) : newType;
+    let inferred = newType;
     if (cacheFile) {
+      const cached = readCache(cacheFile);
+      // Refuse rather than clobber: `cacheFile` is an arbitrary path chosen by
+      // the calling agent, and MCP tools are often auto-approved, so silently
+      // overwriting whatever is at that path would be an unrestricted file
+      // write reachable by prompt injection.
+      if (cached.status === "foreign") {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Refusing to use ${cacheFile} as a cache: ${cached.reason}. Choose a different path.`,
+            },
+          ],
+          isError: true,
+        };
+      }
+      if (cached.status === "ok") inferred = mergeTypes(cached.type, newType);
       try {
-        writeFileSync(cacheFile, JSON.stringify(inferred), "utf8");
+        writeCache(cacheFile, inferred);
       } catch {
         // Cache is a bonus, not a requirement — an unwritable path shouldn't fail the call.
       }
