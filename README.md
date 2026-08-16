@@ -31,6 +31,11 @@ error responses) or paste it into a chat tool and reformat the answer.
 
 ## Install
 
+> **Not yet published to npm.** Until then, clone this repo and run
+> `npm install && npm run build`, then use `node dist/cli.js` in place of
+> `typesherlock` below (or `npm link` to install the `typesherlock` command
+> locally). The instructions below will work as written once it's published.
+
 ```bash
 npm install -g typesherlock
 ```
