@@ -127,12 +127,12 @@ describe("generateTypeScript", () => {
     expect(typescript).toContain("name: string;");
   });
 
-  it("hoists nested objects into named interfaces", () => {
+  it("hoists nested objects into named interfaces, preferring the short field name", () => {
     const type = inferFromSamples([{ address: { city: "Boston" } }]);
     const { typescript } = generateTypeScript(type, { rootName: "User" });
     expect(typescript).toContain("export interface User {");
-    expect(typescript).toContain("address: UserAddress;");
-    expect(typescript).toContain("export interface UserAddress {");
+    expect(typescript).toContain("address: Address;");
+    expect(typescript).toContain("export interface Address {");
     expect(typescript).toContain("city: string;");
   });
 
@@ -155,25 +155,53 @@ describe("generateTypeScript", () => {
   });
 
   it("disambiguates differently-shaped nested objects that share a generated name", () => {
-    // "user-name" and "user_name" both pascal-case to "RootUserName" but have
-    // different fields — they must not collapse into one interface and drop data.
+    // "user-name" and "user_name" both pascal-case to the same short name
+    // ("UserName") but have different fields — they must not collapse into
+    // one interface and drop data. The first one to be visited claims the
+    // short name; the second falls back to its fully path-qualified name.
     const type = inferFromSamples([
       { "user-name": { a: 1 }, user_name: { b: "s" } },
     ]);
     const { typescript } = generateTypeScript(type, { rootName: "Root" });
-    expect(typescript).toContain("export interface RootUserName {");
+    expect(typescript).toContain("export interface UserName {");
     expect(typescript).toContain("a: number;");
-    expect(typescript).toContain("export interface RootUserName2 {");
+    expect(typescript).toContain("export interface RootUserName {");
     expect(typescript).toContain("b: string;");
   });
 
-  it("reuses the same name for identically-shaped objects at the same generated name", () => {
+  it("gives identically-shaped objects under different field names their own distinct interfaces", () => {
     const type = inferFromSamples([{ a: { x: 1 }, b: { x: 1 } }]);
     const { typescript } = generateTypeScript(type, { rootName: "Root" });
-    // RootA and RootB are different generated names (named by path), so both
-    // should exist independently rather than being merged or renamed.
-    expect(typescript).toContain("export interface RootA {");
-    expect(typescript).toContain("export interface RootB {");
+    // Same shape ({x: number}), but "a" and "b" are different fields/concepts —
+    // each gets its own short name rather than being merged into one interface.
+    expect(typescript).toContain("export interface A {");
+    expect(typescript).toContain("export interface B {");
+  });
+
+  it("avoids overly long path-qualified names for deeply nested fields (PokeAPI-style)", () => {
+    // Regression test for real output like "PokemonAbilitiesItemAbility" —
+    // the nested "ability" field should get its own short "Ability" interface,
+    // not a name compounding every ancestor's name along the way.
+    const type = inferFromSamples([
+      { abilities: [{ ability: { name: "static", url: "https://x" } }] },
+    ]);
+    const { typescript } = generateTypeScript(type, { rootName: "Pokemon" });
+    expect(typescript).toContain("export interface Ability {");
+    expect(typescript).not.toContain("PokemonAbilitiesItemAbility");
+  });
+
+  it("falls back to the qualified name only when the short name is taken by a different shape", () => {
+    const type = inferFromSamples([
+      { author: { id: 1 }, book: { author: { name: "Ada" } } },
+    ]);
+    const { typescript } = generateTypeScript(type, { rootName: "Root" });
+    // Top-level "author" claims the short name "Author" first.
+    expect(typescript).toContain("export interface Author {");
+    expect(typescript).toContain("id: number;");
+    // The nested "book.author" has a different shape, so it can't reuse
+    // "Author" — it falls back to the qualified "BookAuthor".
+    expect(typescript).toContain("export interface BookAuthor {");
+    expect(typescript).toContain("name: string;");
   });
 
   it("renders a closed-set field as a string literal union", () => {

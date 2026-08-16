@@ -74,24 +74,47 @@ function findRecursiveAncestor(
 }
 
 /**
- * Resolve a name for `shape`, reusing `baseName` if it's free or already holds an
- * identical shape, otherwise appending a numeric suffix (2, 3, ...) until one does.
+ * Resolve a name for `shape`, trying each of `candidates` in order — reusing
+ * one if it's free or already holds an identical shape — before falling back
+ * to numeric suffixes (2, 3, ...) off the last candidate. `candidates` is
+ * typically [shortName, fullyQualifiedName]: prefer the short, readable name
+ * (e.g. "Ability") and only fall back to the verbose path-qualified one
+ * (e.g. "PokemonAbilitiesItemAbility") if the short name is already taken by
+ * a differently-shaped object.
  */
 function resolveName(
-  baseName: string,
+  candidates: string[],
   shape: InferredType,
   ctx: GenContext
 ): { name: string; isNew: boolean } {
-  let candidate = baseName;
+  for (const candidate of candidates) {
+    if (!ctx.shapesByName.has(candidate)) {
+      ctx.shapesByName.set(candidate, shape);
+      return { name: candidate, isNew: true };
+    }
+    if (typesEqual(ctx.shapesByName.get(candidate)!, shape)) {
+      return { name: candidate, isNew: false };
+    }
+  }
+  const base = candidates[candidates.length - 1];
   let suffix = 2;
+  let candidate = `${base}${suffix}`;
   while (ctx.shapesByName.has(candidate)) {
     if (typesEqual(ctx.shapesByName.get(candidate)!, shape)) {
       return { name: candidate, isNew: false };
     }
-    candidate = `${baseName}${suffix++}`;
+    candidate = `${base}${++suffix}`;
   }
   ctx.shapesByName.set(candidate, shape);
   return { name: candidate, isNew: true };
+}
+
+/** Short name (just the immediate field/item name, e.g. "Ability") tried
+ * before the fully path-qualified fallback (e.g. "PokemonAbilitiesItemAbility"). */
+function nameCandidates(path: string[]): string[] {
+  const qualified = pascalCase(path.join(" "));
+  const short = pascalCase(path[path.length - 1]);
+  return short === qualified ? [qualified] : [short, qualified];
 }
 
 function tsTypeOf(type: InferredType, path: string[], ctx: GenContext): string {
@@ -115,18 +138,17 @@ function tsTypeOf(type: InferredType, path: string[], ctx: GenContext): string {
     case "object": {
       const recursive = findRecursiveAncestor(type, ctx);
       if (recursive) return recursive;
-      const baseName = pascalCase(path.join(" "));
-      return registerInterface(baseName, type, ctx);
+      return registerInterface(nameCandidates(path), type, ctx);
     }
   }
 }
 
 function registerInterface(
-  baseName: string,
+  candidates: string[],
   shape: InferredType & { kind: "object" },
   ctx: GenContext
 ): string {
-  const { name, isNew } = resolveName(baseName, shape, ctx);
+  const { name, isNew } = resolveName(candidates, shape, ctx);
   if (!isNew) return name;
   // Reserve the name before recursing so self-referential shapes don't loop.
   ctx.interfaces.set(name, "");
@@ -163,7 +185,7 @@ export function generateTypeScript(
   const ctx: GenContext = { interfaces: new Map(), shapesByName: new Map(), ancestors: [], rootName };
 
   if (type.kind === "object") {
-    registerInterface(rootName, type, ctx);
+    registerInterface([rootName], type, ctx);
   } else {
     const aliasType = tsTypeOf(type, [rootName], ctx);
     ctx.interfaces.set(rootName, `export type ${rootName} = ${aliasType};`);
@@ -203,25 +225,25 @@ function zodExprOf(type: InferredType, path: string[], ctx: GenContext): string 
         .join(", ")}])`;
     case "object": {
       const recursive = findRecursiveAncestor(type, ctx);
-      if (recursive) {
-        // A recursive schema can't reference itself directly in its own
-        // initializer (the const isn't defined yet at that point) — z.lazy()
-        // defers evaluation until the schema is actually used.
-        return `z.lazy(() => ${recursive}Schema)`;
-      }
-      const baseName = pascalCase(path.join(" "));
-      const name = registerZodSchema(baseName, type, ctx);
-      return `${name}Schema`;
+      const name = recursive ?? registerZodSchema(nameCandidates(path), type, ctx);
+      // Always wrapped in z.lazy(), not just for detected recursive cases:
+      // registerZodSchema reserves the *position* of the outer schema's own
+      // `const` before recursing into its fields (needed so a genuinely
+      // self-referential shape can find its own name already reserved), which
+      // means an outer schema's declaration always ends up ahead of nested
+      // schemas it references — a `const` before its own dependency is
+      // defined throws (temporal dead zone) unless evaluation is deferred.
+      return `z.lazy(() => ${name}Schema)`;
     }
   }
 }
 
 function registerZodSchema(
-  baseName: string,
+  candidates: string[],
   shape: InferredType & { kind: "object" },
   ctx: GenContext
 ): string {
-  const { name, isNew } = resolveName(baseName, shape, ctx);
+  const { name, isNew } = resolveName(candidates, shape, ctx);
   const schemaName = `${name}Schema`;
   if (!isNew) return name;
   ctx.interfaces.set(schemaName, "");
@@ -249,7 +271,7 @@ export function generateZodSchema(
   const ctx: GenContext = { interfaces: new Map(), shapesByName: new Map(), ancestors: [], rootName };
 
   if (type.kind === "object") {
-    registerZodSchema(rootName, type, ctx);
+    registerZodSchema([rootName], type, ctx);
   } else {
     const expr = zodExprOf(type, [rootName], ctx);
     ctx.interfaces.set(`${rootName}Schema`, `export const ${rootName}Schema = ${expr};`);
